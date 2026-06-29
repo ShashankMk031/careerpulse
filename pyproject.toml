@@ -1,0 +1,11 @@
+[project] 
+name = "careerpulse" 
+version = "0.1.0"
+description = "Cloud native job market intelligence system" 
+requires-python = ">=3.12" 
+
+dependencies = [ 
+    "boto3", 
+    "requests",
+    "python-dotenv"
+]
