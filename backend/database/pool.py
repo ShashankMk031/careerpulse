@@ -14,12 +14,11 @@ load_dotenv()
 # Global connection pool instance
 _connection_pool = None
 
-from backend.database.connection import get_db_credentials
-
 def get_pool_config() -> dict:
     """
     Retrieves database credentials and pool sizing bounds from environment variables.
     """
+    from backend.database.connection import get_db_credentials
     creds = get_db_credentials()
     creds["minconn"] = int(os.getenv("DB_MIN_CONN", "2"))
     creds["maxconn"] = int(os.getenv("DB_MAX_CONN", "10"))
