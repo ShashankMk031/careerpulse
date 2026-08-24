@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.6-alpine
     container_name: cp-local-postgres
     environment:
       - POSTGRES_DB=serving_db
@@ -18,8 +18,41 @@ services:
       timeout: 5s
       retries: 5
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cp-local-backend
+    command: uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - POSTGRES_DB=serving_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=cp_local_postgres_password
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - APP_ENV=development
+      - LOG_LEVEL=debug
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cp-local-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
   pgadmin:
-    image: dpage/pgadmin4:latest
+    image: dpage/pgadmin4:8.14
     container_name: cp-local-pgadmin
     environment:
       - PGADMIN_DEFAULT_EMAIL=admin@careerpulse.dev
