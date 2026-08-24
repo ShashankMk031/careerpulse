@@ -25,11 +25,12 @@ services:
     container_name: cp-local-backend
     command: uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
-      - POSTGRES_DB=serving_db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=cp_local_postgres_password
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
+      - DB_ENVIRONMENT=RDS
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=serving_db
+      - DB_USER=postgres
+      - DB_PASSWORD=cp_local_postgres_password
       - APP_ENV=development
       - LOG_LEVEL=debug
     ports:

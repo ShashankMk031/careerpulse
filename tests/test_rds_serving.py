@@ -231,22 +231,39 @@ class TestRDSServingLayer(unittest.TestCase):
         sql_query = mock_cursor.execute.call_args[0][0]
         self.assertIn("INSERT INTO serving.load_metadata", sql_query)
 
+    @patch("backend.database.pool.get_pool_config")
     @patch("psycopg2.pool.ThreadedConnectionPool")
-    def test_threaded_connection_pooling(self, mock_pool_class):
+    def test_threaded_connection_pooling(self, mock_pool_class, mock_get_config):
         """
         Verifies initialization and release interfaces for our connection pool.
         """
         mock_pool = MagicMock()
         mock_pool_class.return_value = mock_pool
+        mock_get_config.return_value = {
+            "host": "mock-host",
+            "port": "5432",
+            "database": "mock_db",
+            "user": "test_user",
+            "password": "secure_password",
+            "minconn": 2,
+            "maxconn": 10,
+        }
         
         import backend.database.pool
         backend.database.pool._connection_pool = None
         
-        with patch.dict("os.environ", {"DB_HOST": "mock-host"}):
-            backend.database.pool.initialize_pool()
-            backend.database.pool.close_pool()
+        backend.database.pool.initialize_pool()
+        backend.database.pool.close_pool()
             
-        mock_pool_class.assert_called_once()
+        mock_pool_class.assert_called_once_with(
+            minconn=2,
+            maxconn=10,
+            host="mock-host",
+            port="5432",
+            database="mock_db",
+            user="test_user",
+            password="secure_password"
+        )
         mock_pool.closeall.assert_called_once()
 
     def test_view_queries_present_in_schema(self):

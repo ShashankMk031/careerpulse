@@ -23,11 +23,12 @@ services:
       dockerfile: Dockerfile
     container_name: cp-prod-backend
     environment:
-      - POSTGRES_DB=serving_db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=cp_prod_postgres_password
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
+      - DB_ENVIRONMENT=RDS
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=serving_db
+      - DB_USER=postgres
+      - DB_PASSWORD=cp_prod_postgres_password
       - APP_ENV=production
       - LOG_LEVEL=info
     restart: unless-stopped

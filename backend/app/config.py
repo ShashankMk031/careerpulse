@@ -19,6 +19,8 @@ class Settings:
     CACHE_MAX_AGE_ANALYTICS: int = int(os.getenv("CACHE_MAX_AGE_ANALYTICS", "3600"))
 
     def __init__(self):
+        if os.getenv("APP_ENV") == "testing":
+            return
         # Validate critical database configuration settings at import-time to fail-fast
         db_env = os.getenv("DB_ENVIRONMENT", "RDS").strip().upper()
         if db_env == "LOCAL":

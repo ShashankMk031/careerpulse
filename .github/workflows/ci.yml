@@ -43,11 +43,12 @@ jobs:
 
       - name: Run Backend Tests
         env:
-          POSTGRES_DB: serving_db
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: cp_local_postgres_password
-          POSTGRES_HOST: localhost
-          POSTGRES_PORT: 5432
+          DB_ENVIRONMENT: RDS
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: serving_db
+          DB_USER: postgres
+          DB_PASSWORD: cp_local_postgres_password
           APP_ENV: testing
         run: |
           python -m unittest discover tests
