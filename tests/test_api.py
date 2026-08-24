@@ -33,6 +33,11 @@ client = TestClient(app, raise_server_exceptions=False)
 
 class TestServingAPI(unittest.TestCase):
 
+    @classmethod
+    def tearDownClass(cls):
+        pool_init_patcher.stop()
+        pool_close_patcher.stop()
+
     def test_root_endpoint(self):
         """
         Verifies GET / returns standard status details.
