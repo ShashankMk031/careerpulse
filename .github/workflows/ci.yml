@@ -96,9 +96,9 @@ jobs:
         run: |
           curl -f --retry 5 --retry-delay 3 http://localhost/health
 
-      - name: Smoke Test API Summary Endpoint
+      - name: Smoke Test API Version Endpoint
         run: |
-          curl -f --retry 5 --retry-delay 3 http://localhost/api/v1/summary
+          curl -f --retry 5 --retry-delay 3 http://localhost/version
 
       - name: Tear Down Container Stack
         if: always()
