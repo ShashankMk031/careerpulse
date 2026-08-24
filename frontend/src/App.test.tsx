@@ -209,4 +209,53 @@ describe("Frontend Dashboard & Analytics Tests", () => {
       expect(screen.getByText("0524006")).toBeDefined();
     });
   });
+
+  describe("Companies Page Interactions", () => {
+    it("should allow search filtering and pagination", async () => {
+      let requestedParams: any = null;
+      vi.spyOn(apiClient, "get").mockImplementation((url, config) => {
+        if (url.includes("/api/v1/companies")) {
+          requestedParams = config?.params;
+          return Promise.resolve({
+            data: {
+              success: true,
+              data: [
+                { company: "SearchTarget", total_jobs: 10 }
+              ],
+              metadata: {
+                page: 1,
+                page_size: 20,
+                total_records: 1,
+                total_pages: 1,
+                has_next: false,
+                has_previous: false
+              }
+            }
+          });
+        }
+        if (url === "/api/v1/summary") return Promise.resolve({ data: mockSummary });
+        return Promise.resolve({ data: { success: true, data: [] } });
+      });
+
+      render(
+        <QueryClientProvider client={createTestQueryClient()}>
+          <MemoryRouter initialEntries={["/companies"]}>
+            <AppRoutes />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText("Search companies...")).toBeDefined();
+      });
+
+      const searchInput = screen.getByPlaceholderText("Search companies...");
+      fireEvent.change(searchInput, { target: { value: "Google" } });
+
+      await waitFor(() => {
+        expect(screen.getByText("SearchTarget")).toBeDefined();
+        expect(requestedParams?.search).toBe("Google");
+      });
+    });
+  });
 });
