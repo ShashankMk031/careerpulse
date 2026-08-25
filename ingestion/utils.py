@@ -57,4 +57,4 @@ def generate_s3_key(source: str, timestamp: datetime, content_type: str) -> str:
     if content_type == "metadata":
         return f"bronze/source={source}/year={year}/month={month}/day={day}/jobs_{ts_str}.metadata.json"
     else:
-        return f"bronze/source={source}/year={year}/month={month}/day={day}/jobs_{ts_str}.json"
+        return f"bronze/source={source}/year={year}/month={month}/day={day}/jobs_{ts_str}.jsonl"

@@ -30,7 +30,7 @@ from ingestion.exceptions import (
 )
 from ingestion.logger import logger, PipelineLoggerAdapter
 from ingestion.remoteok import fetch_jobs
-from ingestion.uploader import upload_json_to_s3
+from ingestion.uploader import upload_json_to_s3, upload_jsonl_to_s3
 from ingestion.utils import get_utc_timestamp, generate_pipeline_id, generate_s3_key
 
 @dataclass
@@ -111,10 +111,8 @@ def main() -> PipelineResult:
         metadata_key = generate_s3_key(SOURCE_NAME, start_time, "metadata")
         
         # Calculate JSON serialization, payload size, and SHA-256 checksum metrics
-        # We wrap the jobs in a root object with key 'array' so that both jobs and metadata
-        # JSON files are parsed as root JSON objects by the Athena SerDe, preventing parsing crashes.
-        jobs_wrapped = {"array": jobs}
-        payload_str = json.dumps(jobs_wrapped, indent=2, ensure_ascii=False)
+        # For JSONL: exactly one record per line, UTF-8 encoded
+        payload_str = "\n".join(json.dumps(job, ensure_ascii=False) for job in jobs)
         payload_bytes = payload_str.encode("utf-8")
         payload_size = len(payload_bytes)
         sha256_hash = hashlib.sha256(payload_bytes).hexdigest()
@@ -124,7 +122,7 @@ def main() -> PipelineResult:
         # Step 4: Upload Jobs
         log.info("Uploading Jobs")
         jobs_upload_start_perf = time.perf_counter()
-        upload_json_to_s3(jobs_wrapped, jobs_key)
+        upload_jsonl_to_s3(jobs, jobs_key)
         jobs_upload_duration_ms = (time.perf_counter() - jobs_upload_start_perf) * 1000.0
         records_uploaded = records_processed
         

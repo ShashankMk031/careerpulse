@@ -25,7 +25,7 @@ from ingestion.exceptions import (
     CareerPulseError,
 )
 from ingestion.schemas.remoteok import validate_remoteok_response
-from ingestion.uploader import upload_json_to_s3
+from ingestion.uploader import upload_json_to_s3, upload_jsonl_to_s3
 from ingestion.main import main, PipelineResult
 import ingestion.config as config
 
@@ -44,7 +44,7 @@ class TestIngestionUtils(unittest.TestCase):
         jobs_key = generate_s3_key("remoteok", dt, "jobs")
         self.assertEqual(
             jobs_key,
-            "bronze/source=remoteok/year=2026/month=07/day=10/jobs_20260710T184637Z.json"
+            "bronze/source=remoteok/year=2026/month=07/day=10/jobs_20260710T184637Z.jsonl"
         )
 
     def test_generate_s3_key_metadata(self) -> None:
@@ -325,6 +325,158 @@ class TestUploader(unittest.TestCase):
         self.assertEqual(etag, "success_etag_conn")
         self.assertEqual(mock_s3.put_object.call_count, 2)
 
+    # JSONL-specific S3 upload tests
+    @patch("ingestion.uploader.S3_BUCKET", None)
+    def test_upload_jsonl_s3_bucket_not_set(self) -> None:
+        with self.assertRaises(S3UploadFailedError) as ctx:
+            upload_jsonl_to_s3([{"id": "1"}], "test.jsonl")
+        self.assertIn("S3_BUCKET environment variable is not configured", str(ctx.exception))
+
+    @patch("ingestion.uploader.S3_BUCKET", "mock-bucket")
+    @patch("boto3.client")
+    def test_upload_jsonl_s3_success(self, mock_boto_client: MagicMock) -> None:
+        mock_s3 = MagicMock()
+        mock_boto_client.return_value = mock_s3
+        mock_s3.put_object.return_value = {
+            "ResponseMetadata": {"HTTPStatusCode": 200},
+            "ETag": '"abc123etag_jsonl"'
+        }
+        etag = upload_jsonl_to_s3([{"id": "1", "position": "Dev", "company": "Acme"}], "test.jsonl")
+        self.assertEqual(etag, "abc123etag_jsonl")
+        mock_s3.put_object.assert_called_once()
+        # Verify ContentType set correctly for JSONL
+        called_kwargs = mock_s3.put_object.call_args[1]
+        self.assertEqual(called_kwargs["ContentType"], "application/x-ndjson; charset=utf-8")
+
+    @patch("ingestion.uploader.S3_BUCKET", "mock-bucket")
+    @patch("boto3.client")
+    def test_upload_jsonl_s3_non_200_failure(self, mock_boto_client: MagicMock) -> None:
+        mock_s3 = MagicMock()
+        mock_boto_client.return_value = mock_s3
+        mock_s3.put_object.return_value = {
+            "ResponseMetadata": {"HTTPStatusCode": 500}
+        }
+        with self.assertRaises(S3UploadFailedError) as ctx:
+            upload_jsonl_to_s3([{"id": "1"}], "test.jsonl")
+        self.assertIn("non-200 status code", str(ctx.exception))
+
+    @patch("ingestion.uploader.S3_BUCKET", "mock-bucket")
+    @patch("boto3.client")
+    def test_upload_jsonl_s3_no_credentials_failure(self, mock_boto_client: MagicMock) -> None:
+        from botocore.exceptions import NoCredentialsError
+        mock_s3 = MagicMock()
+        mock_boto_client.return_value = mock_s3
+        mock_s3.put_object.side_effect = NoCredentialsError()
+        with self.assertRaises(S3CredentialsError) as ctx:
+            upload_jsonl_to_s3([{"id": "1"}], "test.jsonl")
+        self.assertIn("AWS credentials not found", str(ctx.exception))
+
+    @patch("ingestion.uploader.S3_BUCKET", "mock-bucket")
+    @patch("boto3.client")
+    def test_upload_jsonl_s3_no_such_bucket_permanent_failure(self, mock_boto_client: MagicMock) -> None:
+        from botocore.exceptions import ClientError
+        mock_s3 = MagicMock()
+        mock_boto_client.return_value = mock_s3
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "Bucket does not exist"}},
+            "PutObject"
+        )
+        with self.assertRaises(S3BucketNotFoundError) as ctx:
+            upload_jsonl_to_s3([{"id": "1"}], "test.jsonl")
+        self.assertIn("S3 Bucket 'mock-bucket' not found", str(ctx.exception))
+
+    @patch("ingestion.uploader.S3_BUCKET", "mock-bucket")
+    @patch("ingestion.uploader.S3_MAX_RETRIES", 2)
+    @patch("ingestion.uploader.S3_BACKOFF_FACTOR", 0.01)
+    @patch("boto3.client")
+    def test_upload_jsonl_s3_transient_failure_retry_success(self, mock_boto_client: MagicMock) -> None:
+        from botocore.exceptions import ClientError
+        mock_s3 = MagicMock()
+        mock_boto_client.return_value = mock_s3
+        mock_s3.put_object.side_effect = [
+            ClientError(
+                {"Error": {"Code": "SlowDown", "Message": "Throttling"}},
+                "PutObject"
+            ),
+            {
+                "ResponseMetadata": {"HTTPStatusCode": 200},
+                "ETag": '"success_etag_jsonl"'
+            }
+        ]
+        etag = upload_jsonl_to_s3([{"id": "1"}], "test.jsonl")
+        self.assertEqual(etag, "success_etag_jsonl")
+        self.assertEqual(mock_s3.put_object.call_count, 2)
+
+    @patch("ingestion.uploader.S3_BUCKET", "mock-bucket")
+    @patch("ingestion.uploader.S3_MAX_RETRIES", 2)
+    @patch("ingestion.uploader.S3_BACKOFF_FACTOR", 0.01)
+    @patch("boto3.client")
+    def test_upload_jsonl_s3_transient_failure_max_retries_reached(self, mock_boto_client: MagicMock) -> None:
+        from botocore.exceptions import ClientError
+        mock_s3 = MagicMock()
+        mock_boto_client.return_value = mock_s3
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "RequestLimitExceeded", "Message": "Throttling limit exceeded"}},
+            "PutObject"
+        )
+        with self.assertRaises(S3UploadFailedError) as ctx:
+            upload_jsonl_to_s3([{"id": "1"}], "test.jsonl")
+        self.assertIn("S3 upload failed with ClientError", str(ctx.exception))
+        self.assertEqual(mock_s3.put_object.call_count, 3)
+
+    @patch("ingestion.uploader.S3_BUCKET", "mock-bucket")
+    @patch("ingestion.uploader.S3_MAX_RETRIES", 2)
+    @patch("ingestion.uploader.S3_BACKOFF_FACTOR", 0.01)
+    @patch("boto3.client")
+    def test_upload_jsonl_s3_unexpected_exception_retry_success(self, mock_boto_client: MagicMock) -> None:
+        mock_s3 = MagicMock()
+        mock_boto_client.return_value = mock_s3
+        mock_s3.put_object.side_effect = [
+            ConnectionResetError("Connection reset by peer"),
+            {
+                "ResponseMetadata": {"HTTPStatusCode": 200},
+                "ETag": '"success_etag_jsonl_conn"'
+            }
+        ]
+        etag = upload_jsonl_to_s3([{"id": "1"}], "test.jsonl")
+        self.assertEqual(etag, "success_etag_jsonl_conn")
+        self.assertEqual(mock_s3.put_object.call_count, 2)
+
+    # JSONL Serialization Formatting Tests
+    def test_jsonl_serialization_multiple_records(self) -> None:
+        records = [
+            {"id": "1", "position": "Engineer", "company": "Acme"},
+            {"id": "2", "position": "Designer", "company": "Globe"}
+        ]
+        serialized = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+        lines = serialized.split("\n")
+        self.assertEqual(len(lines), 2)
+        
+        record1 = json.loads(lines[0])
+        record2 = json.loads(lines[1])
+        self.assertEqual(record1["id"], "1")
+        self.assertEqual(record2["position"], "Designer")
+        
+        self.assertNotIn("array", record1)
+        self.assertNotIn("array", record2)
+
+    def test_jsonl_serialization_unicode_preservation(self) -> None:
+        records = [
+            {"id": "1", "position": "Fåñçÿ Job 🚀", "company": "Unicøde Corp®"}
+        ]
+        serialized = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+        self.assertIn("Fåñçÿ Job 🚀", serialized)
+        self.assertIn("Unicøde Corp®", serialized)
+        
+        parsed = json.loads(serialized)
+        self.assertEqual(parsed["position"], "Fåñçÿ Job 🚀")
+        self.assertEqual(parsed["company"], "Unicøde Corp®")
+
+    def test_jsonl_serialization_empty_records(self) -> None:
+        records = []
+        serialized = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+        self.assertEqual(serialized, "")
+
 
 # =====================================================================
 # 6. MAIN ORCHESTRATOR TESTS
@@ -333,7 +485,8 @@ class TestUploader(unittest.TestCase):
 class TestMainOrchestrator(unittest.TestCase):
     @patch("ingestion.main.fetch_jobs")
     @patch("ingestion.main.upload_json_to_s3")
-    def test_main_success_flow(self, mock_upload: MagicMock, mock_fetch: MagicMock) -> None:
+    @patch("ingestion.main.upload_jsonl_to_s3")
+    def test_main_success_flow(self, mock_upload_jsonl: MagicMock, mock_upload_json: MagicMock, mock_fetch: MagicMock) -> None:
         mock_fetch.return_value = {
             "metadata": {"last_updated": 123456},
             "jobs": [
@@ -341,22 +494,24 @@ class TestMainOrchestrator(unittest.TestCase):
                 {"id": "2", "position": "Analyst", "company": "Acme"}
             ]
         }
-        mock_upload.return_value = "mock_etag"
+        mock_upload_json.return_value = "mock_metadata_etag"
+        mock_upload_jsonl.return_value = "mock_jobs_etag"
         
         result = main()
         self.assertEqual(result.status, PipelineStatus.SUCCESS)
         self.assertEqual(result.records_processed, 2)
         self.assertEqual(result.records_uploaded, 2)
         self.assertIsNotNone(result.sha256)
-        self.assertNil = result.error_message
+        self.assertIsNone(result.error_message)
         
         # Should calculate SHA-256 correctly
-        jobs_json = json.dumps({"array": mock_fetch.return_value["jobs"]}, indent=2)
-        expected_sha = hashlib.sha256(jobs_json.encode("utf-8")).hexdigest()
+        jobs_jsonl = "\n".join(json.dumps(job, ensure_ascii=False) for job in mock_fetch.return_value["jobs"])
+        expected_sha = hashlib.sha256(jobs_jsonl.encode("utf-8")).hexdigest()
         self.assertEqual(result.sha256, expected_sha)
         
         # Verify both jobs and metadata upload were called
-        self.assertEqual(mock_upload.call_count, 2)
+        mock_upload_jsonl.assert_called_once()
+        mock_upload_json.assert_called_once()
 
     @patch("ingestion.main.fetch_jobs")
     def test_main_api_timeout_failure(self, mock_fetch: MagicMock) -> None:
@@ -387,39 +542,42 @@ class TestMainOrchestrator(unittest.TestCase):
         self.assertIn("validation failed", result.error_message)
 
     @patch("ingestion.main.fetch_jobs")
+    @patch("ingestion.main.upload_jsonl_to_s3")
     @patch("ingestion.main.upload_json_to_s3")
-    def test_main_s3_bucket_missing_failure(self, mock_upload: MagicMock, mock_fetch: MagicMock) -> None:
+    def test_main_s3_bucket_missing_failure(self, mock_upload_json: MagicMock, mock_upload_jsonl: MagicMock, mock_fetch: MagicMock) -> None:
         mock_fetch.return_value = {
             "metadata": {"last_updated": 123},
             "jobs": [{"id": "1", "position": "Engineer", "company": "Acme"}]
         }
-        mock_upload.side_effect = S3BucketNotFoundError("Bucket not found")
+        mock_upload_jsonl.side_effect = S3BucketNotFoundError("Bucket not found")
         
         result = main()
         self.assertEqual(result.status, PipelineStatus.FAILED)
         self.assertIn("Bucket configuration error", result.error_message)
 
     @patch("ingestion.main.fetch_jobs")
+    @patch("ingestion.main.upload_jsonl_to_s3")
     @patch("ingestion.main.upload_json_to_s3")
-    def test_main_s3_credentials_failure(self, mock_upload: MagicMock, mock_fetch: MagicMock) -> None:
+    def test_main_s3_credentials_failure(self, mock_upload_json: MagicMock, mock_upload_jsonl: MagicMock, mock_fetch: MagicMock) -> None:
         mock_fetch.return_value = {
             "metadata": {"last_updated": 123},
             "jobs": [{"id": "1", "position": "Engineer", "company": "Acme"}]
         }
-        mock_upload.side_effect = S3CredentialsError("Creds missing")
+        mock_upload_jsonl.side_effect = S3CredentialsError("Creds missing")
         
         result = main()
         self.assertEqual(result.status, PipelineStatus.FAILED)
         self.assertIn("Credential resolution error", result.error_message)
 
     @patch("ingestion.main.fetch_jobs")
+    @patch("ingestion.main.upload_jsonl_to_s3")
     @patch("ingestion.main.upload_json_to_s3")
-    def test_main_s3_upload_failed_failure(self, mock_upload: MagicMock, mock_fetch: MagicMock) -> None:
+    def test_main_s3_upload_failed_failure(self, mock_upload_json: MagicMock, mock_upload_jsonl: MagicMock, mock_fetch: MagicMock) -> None:
         mock_fetch.return_value = {
             "metadata": {"last_updated": 123},
             "jobs": [{"id": "1", "position": "Engineer", "company": "Acme"}]
         }
-        mock_upload.side_effect = S3UploadFailedError("Write error")
+        mock_upload_jsonl.side_effect = S3UploadFailedError("Write error")
         
         result = main()
         self.assertEqual(result.status, PipelineStatus.FAILED)

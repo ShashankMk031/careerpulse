@@ -28,32 +28,10 @@ from ingestion.exceptions import (
 )
 from ingestion.logger import logger
 
-def upload_json_to_s3(data: Union[Dict[str, Any], list], s3_key: str) -> str:
+def _upload_bytes_to_s3(payload_bytes: bytes, s3_key: str, content_type: str) -> str:
     """
-    Serializes a Python dict or list to a JSON string and uploads it to Amazon S3.
-    
-    Includes retry logic with exponential backoff for transient failures.
-    Verifies that the upload succeeded (HTTP status 200) and returns the ETag.
-    
-    Args:
-        data: The dictionary or list to serialize and upload.
-        s3_key: The target S3 key path.
-        
-    Returns:
-        str: The ETag of the uploaded S3 object.
-        
-    Raises:
-        S3BucketNotFoundError: If the target bucket does not exist.
-        S3CredentialsError: If AWS credentials are missing or invalid.
-        S3UploadFailedError: If the upload failed after max retries.
+    Private helper to upload raw bytes to S3 with retry logic and error handling.
     """
-    if not S3_BUCKET:
-        raise S3UploadFailedError("S3_BUCKET environment variable is not configured.")
-        
-    # Serialize to JSON string with indent for clean Bronze readability
-    payload_str = json.dumps(data, indent=2, ensure_ascii=False)
-    payload_bytes = payload_str.encode("utf-8")
-    
     # Initialize boto3 S3 client using default credential chain
     try:
         s3_client = boto3.client("s3", region_name=AWS_REGION)
@@ -65,7 +43,7 @@ def upload_json_to_s3(data: Union[Dict[str, Any], list], s3_key: str) -> str:
     while True:
         try:
             logger.info(
-                f"Uploading JSON payload to S3 (bucket: {S3_BUCKET}, key: {s3_key}). "
+                f"Uploading payload to S3 (bucket: {S3_BUCKET}, key: {s3_key}). "
                 f"Attempt {attempt + 1}/{S3_MAX_RETRIES + 1}"
             )
             
@@ -74,7 +52,7 @@ def upload_json_to_s3(data: Union[Dict[str, Any], list], s3_key: str) -> str:
                 Bucket=S3_BUCKET,
                 Key=s3_key,
                 Body=payload_bytes,
-                ContentType="application/json; charset=utf-8"
+                ContentType=content_type
             )
             
             # Validate status code in ResponseMetadata
@@ -134,3 +112,59 @@ def upload_json_to_s3(data: Union[Dict[str, Any], list], s3_key: str) -> str:
                 
             logger.error(f"Unexpected error during S3 upload: {e}")
             raise S3UploadFailedError(f"Unexpected error during S3 upload: {e}") from e
+
+def upload_json_to_s3(data: Union[Dict[str, Any], list], s3_key: str) -> str:
+    """
+    Serializes a Python dict or list to a JSON string and uploads it to Amazon S3.
+    
+    Includes retry logic with exponential backoff for transient failures.
+    Verifies that the upload succeeded (HTTP status 200) and returns the ETag.
+    
+    Args:
+        data: The dictionary or list to serialize and upload.
+        s3_key: The target S3 key path.
+        
+    Returns:
+        str: The ETag of the uploaded S3 object.
+        
+    Raises:
+        S3BucketNotFoundError: If the target bucket does not exist.
+        S3CredentialsError: If AWS credentials are missing or invalid.
+        S3UploadFailedError: If the upload failed after max retries.
+    """
+    if not S3_BUCKET:
+        raise S3UploadFailedError("S3_BUCKET environment variable is not configured.")
+        
+    # Serialize to JSON string with indent for clean Bronze readability
+    payload_str = json.dumps(data, indent=2, ensure_ascii=False)
+    payload_bytes = payload_str.encode("utf-8")
+    
+    return _upload_bytes_to_s3(payload_bytes, s3_key, "application/json; charset=utf-8")
+
+def upload_jsonl_to_s3(records: list[Dict[str, Any]], s3_key: str) -> str:
+    """
+    Serializes a list of dictionaries to JSON Lines format (one record per line)
+    and uploads the payload to Amazon S3.
+    
+    Includes retry logic with exponential backoff for transient failures.
+    Verifies that the upload succeeded (HTTP status 200) and returns the ETag.
+    
+    Args:
+        records: A list of dictionaries representing the records to upload.
+        s3_key: The target S3 key path.
+        
+    Returns:
+        str: The ETag of the uploaded S3 object.
+        
+    Raises:
+        S3BucketNotFoundError: If the target bucket does not exist.
+        S3CredentialsError: If AWS credentials are missing or invalid.
+        S3UploadFailedError: If the upload failed after max retries.
+    """
+    if not S3_BUCKET:
+        raise S3UploadFailedError("S3_BUCKET environment variable is not configured.")
+        
+    payload_str = "\n".join(json.dumps(rec, ensure_ascii=False) for rec in records)
+    payload_bytes = payload_str.encode("utf-8")
+    
+    return _upload_bytes_to_s3(payload_bytes, s3_key, "application/x-ndjson; charset=utf-8")
