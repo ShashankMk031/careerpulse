@@ -2,7 +2,7 @@
 CareerPulse Silver Layer PySpark ETL Script.
 Responsible for:
 - Reading Bronze dataset from Glue Data Catalog.
-- Extracting and flattening the nested 'array' structures.
+- Ingesting and validating flat Bronze NDJSON job records.
 - Validating schemas and schema type casting.
 - Separating business validation rule failures into a quarantined S3 dataset partitioned by reason.
 - Deduplicating job listings by ID, keeping the newest entry based on epoch time.
@@ -23,7 +23,7 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.context import SparkContext
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, explode, when, trim, lower, lit, desc, row_number, to_timestamp, current_timestamp
+from pyspark.sql.functions import col, when, trim, lower, lit, desc, row_number, to_timestamp, current_timestamp
 from pyspark.sql.types import StructType, StructField, StringType, LongType, IntegerType, BooleanType, TimestampType, ArrayType
 from pyspark.sql.window import Window
 
@@ -53,64 +53,57 @@ SILVER_SCHEMA = StructType([
     StructField("day", StringType(), True)
 ])
 
+REQUIRED_BRONZE_COLUMNS = [
+    "id", "slug", "epoch", "date", "company", "company_logo",
+    "position", "tags", "description", "location", "apply_url",
+    "salary_min", "salary_max", "logo", "url", "original",
+    "year", "month", "day"
+]
+
 def validate_schema(df):
     """
-    Validates that the source DataFrame contains the expected nested job records
+    Validates that the source DataFrame contains the expected flat Bronze job records (NDJSON)
     and maps columns to their appropriate types.
     """
-    # If the exploded nested array isn't present, the schema is invalid
-    if "array" not in df.columns:
-        raise ValueError("Source DataFrame is missing the required nested 'array' column.")
-    
-    # Retrieve actual fields in the exploded 'job' struct to handle missing columns dynamically (schema drift)
-    job_fields = []
-    try:
-        job_fields = df.schema["array"].dataType.elementType.fieldNames()
-    except Exception as e:
-        print(f"Warning: Could not extract job fields from catalog schema: {e}")
-        
-    def get_job_col(field_name, default_type):
-        if field_name in job_fields:
-            return col(f"job.{field_name}").cast(default_type)
-        else:
-            return lit(None).cast(default_type)
+    missing_columns = [col_name for col_name in REQUIRED_BRONZE_COLUMNS if col_name not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Source DataFrame is missing required Bronze columns: {missing_columns}")
 
-    # Explode the jobs array
-    df_flat = df.select(explode("array").alias("job"), "year", "month", "day")
-    
-    # Project and cast fields to the explicit Silver schema types
-    df_projected = df_flat.select(
-        get_job_col("id", LongType()).alias("id"),
-        get_job_col("slug", StringType()).alias("slug"),
-        get_job_col("epoch", LongType()).alias("epoch"),
-        (col("job.date") if "date" in job_fields else lit(None).cast(StringType())).alias("date_raw"),
-        get_job_col("company", StringType()).alias("company"),
-        get_job_col("company_logo", StringType()).alias("company_logo"),
-        get_job_col("position", StringType()).alias("position"),
-        get_job_col("tags", ArrayType(StringType())).alias("tags"),
-        get_job_col("description", StringType()).alias("description"),
-        get_job_col("location", StringType()).alias("location"),
-        get_job_col("apply_url", StringType()).alias("apply_url"),
-        (when(col("job.salary_min").cast(IntegerType()) > 0, col("job.salary_min").cast(IntegerType())).otherwise(lit(None)) if "salary_min" in job_fields else lit(None).cast(IntegerType())).alias("salary_min"),
-        (when(col("job.salary_max").cast(IntegerType()) > 0, col("job.salary_max").cast(IntegerType())).otherwise(lit(None)) if "salary_max" in job_fields else lit(None).cast(IntegerType())).alias("salary_max"),
-        get_job_col("logo", StringType()).alias("logo"),
-        get_job_col("url", StringType()).alias("url"),
-        get_job_col("original", BooleanType()).alias("original"),
+    # Project and cast fields to the explicit Silver intermediate schema types
+    df_projected = df.select(
+        col("id").cast(LongType()).alias("id"),
+        col("slug").cast(StringType()).alias("slug"),
+        col("epoch").cast(LongType()).alias("epoch"),
+        col("date").cast(StringType()).alias("date_raw"),
+        col("company").cast(StringType()).alias("company"),
+        col("company_logo").cast(StringType()).alias("company_logo"),
+        col("position").cast(StringType()).alias("position"),
+        col("tags").cast(ArrayType(StringType())).alias("tags"),
+        col("description").cast(StringType()).alias("description"),
+        col("location").cast(StringType()).alias("location"),
+        col("apply_url").cast(StringType()).alias("apply_url"),
+        when(col("salary_min").cast(IntegerType()) > 0, col("salary_min").cast(IntegerType()))
+        .otherwise(lit(None)).alias("salary_min"),
+        when(col("salary_max").cast(IntegerType()) > 0, col("salary_max").cast(IntegerType()))
+        .otherwise(lit(None)).alias("salary_max"),
+        col("logo").cast(StringType()).alias("logo"),
+        col("url").cast(StringType()).alias("url"),
+        col("original").cast(BooleanType()).alias("original"),
         col("year").cast(StringType()).alias("yearProjected"),
         col("month").cast(StringType()).alias("monthProjected"),
         col("day").cast(StringType()).alias("dayProjected")
     )
-    
+
     # Restore standard partition column names
     df_projected = df_projected.withColumnRenamed("yearProjected", "year") \
                                .withColumnRenamed("monthProjected", "month") \
                                .withColumnRenamed("dayProjected", "day")
-                               
+
     return df_projected
 
 def validate_business_rules(df):
     """
-    Evaluates business data quality checks on the flattened job records.
+    Evaluates business data quality checks on the job records.
     Adds a 'reason' column indicating the failure type for non-compliant records.
     """
     # Business Rules:
@@ -217,7 +210,7 @@ def main():
     print("Reading Bronze table from Glue Catalog...")
     bronze_dyf = glueContext.create_dynamic_frame.from_catalog(
         database="cp_dev_catalog",
-        table_name="source_remoteok",
+        table_name="source_remoteok_active",
         transformation_ctx="bronze_source"
     )
     bronze_df = bronze_dyf.toDF()

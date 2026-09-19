@@ -142,25 +142,21 @@ from silver_etl import validate_schema, validate_business_rules, clean_dataframe
 
 class TestSilverETLTransformations(unittest.TestCase):
 
-    def test_validate_schema_valid_input(self):
+    def test_validate_schema_valid_flat_bronze_input(self):
         """
-        Tests that validate_schema correctly explodes the 'array' column
-        and projects all fields with correct type casts.
+        Tests that validate_schema accepts the flat Bronze schema
+        and projects all fields with correct type casts and column mapping.
         """
         mock_df = MagicMock()
-        mock_df.columns = ["array", "year", "month", "day"]
-        
-        mock_element_type = MagicMock()
-        mock_element_type.fieldNames.return_value = ["id", "slug", "epoch", "date", "company", "company_logo", "position", "tags", "description", "location", "apply_url", "salary_min", "salary_max", "logo", "url", "original"]
-        mock_df.schema = {
-            "array": MagicMock(dataType=MagicMock(elementType=mock_element_type))
-        }
-        
-        mock_exploded_df = MagicMock()
-        mock_df.select.return_value = mock_exploded_df
+        mock_df.columns = [
+            "id", "slug", "epoch", "date", "company", "company_logo",
+            "position", "tags", "description", "location", "apply_url",
+            "salary_min", "salary_max", "logo", "url", "original",
+            "year", "month", "day"
+        ]
         
         mock_projected_df = MagicMock()
-        mock_exploded_df.select.return_value = mock_projected_df
+        mock_df.select.return_value = mock_projected_df
         
         mock_renamed_df1 = MagicMock()
         mock_renamed_df2 = MagicMock()
@@ -172,24 +168,58 @@ class TestSilverETLTransformations(unittest.TestCase):
         
         result_df = validate_schema(mock_df)
         
-        # Verify columns check and projection calls
+        # Verify select called once on flat Bronze DataFrame
         mock_df.select.assert_called_once()
-        mock_exploded_df.select.assert_called_once()
         
-        # Assert type casts were projected
+        # Verify projected expressions
+        select_args = mock_df.select.call_args[0]
+        select_exprs = [str(arg) for arg in select_args]
+        
+        # 1. Verify id is cast to LongType
+        id_expr = next(expr for expr in select_exprs if ".alias(id)" in expr)
+        self.assertIn("cast(col(id) as", id_expr)
+        self.assertIn("LongType", id_expr)
+        
+        # 2. Verify epoch is cast to LongType
+        epoch_expr = next(expr for expr in select_exprs if ".alias(epoch)" in expr)
+        self.assertIn("cast(col(epoch) as", epoch_expr)
+        self.assertIn("LongType", epoch_expr)
+        
+        # 3. Verify date becomes date_raw
+        date_expr = next(expr for expr in select_exprs if ".alias(date_raw)" in expr)
+        self.assertIn("cast(col(date) as", date_expr)
+        self.assertIn("StringType", date_expr)
+        
+        # 4. Verify salary fields are correctly typed
+        salary_min_expr = next(expr for expr in select_exprs if ".alias(salary_min)" in expr)
+        self.assertIn("cast(col(salary_min) as", salary_min_expr)
+        self.assertIn("IntegerType", salary_min_expr)
+        
+        salary_max_expr = next(expr for expr in select_exprs if ".alias(salary_max)" in expr)
+        self.assertIn("cast(col(salary_max) as", salary_max_expr)
+        self.assertIn("IntegerType", salary_max_expr)
+        
+        # 5. Verify tags preserved as ArrayType
+        tags_expr = next(expr for expr in select_exprs if ".alias(tags)" in expr)
+        self.assertIn("ArrayType", tags_expr)
+        
+        # 6. Verify partition column renaming
         self.assertEqual(result_df, mock_renamed_df3)
+        mock_projected_df.withColumnRenamed.assert_called_with("yearProjected", "year")
+        mock_renamed_df1.withColumnRenamed.assert_called_with("monthProjected", "month")
+        mock_renamed_df2.withColumnRenamed.assert_called_with("dayProjected", "day")
 
-    def test_validate_schema_missing_array_throws(self):
+    def test_validate_schema_missing_columns_throws(self):
         """
-        Tests that validate_schema raises ValueError if the 'array' column is missing.
+        Tests that validate_schema raises ValueError if required Bronze columns are missing.
         """
         mock_df = MagicMock()
-        mock_df.columns = ["other_column"]
+        mock_df.columns = ["id", "company", "position"]  # missing required columns like epoch, date, etc.
         
         with self.assertRaises(ValueError) as context:
             validate_schema(mock_df)
             
-        self.assertIn("missing the required nested 'array' column", str(context.exception))
+        self.assertIn("missing required Bronze columns", str(context.exception))
 
     def test_validate_business_rules_logic(self):
         """
@@ -281,9 +311,23 @@ class TestSilverETLTransformations(unittest.TestCase):
         
         silver_df, duplicates_df = transform_dataframe(mock_df)
         
-        # Verify calls
+        # Verify date_raw was parsed into date_posted with the ISO-8601 format and dropped
         mock_df.withColumn.assert_called_once()
+        self.assertEqual(mock_df.withColumn.call_args[0][0], "date_posted")
+        self.assertIn("to_timestamp(col(date_raw)", str(mock_df.withColumn.call_args[0][1]))
+        self.assertIn("yyyy-MM-dd'T'HH:mm:ssXXX", str(mock_df.withColumn.call_args[0][1]))
         mock_df_ts.drop.assert_called_once_with("date_raw")
+        
+        # Verify deduplication window partitioned by id and ordered by epoch descending
+        pyspark_sql_window_mock.Window.partitionBy.assert_called_with("id")
+        pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.assert_called_once()
+        order_expr = str(pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.call_args[0][0])
+        self.assertIn("desc(epoch)", order_expr)
+        
+        # Verify duplicate records receive reason="duplicate"
+        mock_dup_filtered.withColumn.assert_called_once_with("reason", mock_dup_filtered.withColumn.call_args[0][1])
+        self.assertIn("duplicate", str(mock_dup_filtered.withColumn.call_args[0][1]))
+        
         self.assertEqual(mock_df_drop.withColumn.call_count, 1)
         self.assertEqual(mock_df_w1.withColumn.call_count, 1)
         self.assertEqual(mock_df_w2.withColumn.call_count, 1)
