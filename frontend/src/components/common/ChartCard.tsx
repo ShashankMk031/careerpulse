@@ -11,6 +11,7 @@ interface ChartCardProps {
   error: boolean;
   errorMessage?: string;
   empty: boolean;
+  emptyMessage?: string;
   onRetry?: () => void;
   children: ReactNode;
 }
@@ -22,13 +23,14 @@ export default function ChartCard({
   error,
   errorMessage,
   empty,
+  emptyMessage,
   onRetry,
   children,
 }: ChartCardProps) {
   return (
     <Card title={title} subtitle={subtitle}>
       {loading ? (
-        <div className="h-[300px] flex flex-col justify-center">
+        <div className="h-[300px] flex flex-col justify-center animate-pulse">
           <SkeletonList rows={3} />
         </div>
       ) : error ? (
@@ -37,7 +39,7 @@ export default function ChartCard({
         </div>
       ) : empty ? (
         <div className="h-[300px] flex items-center justify-center">
-          <EmptyState />
+          <EmptyState message={emptyMessage} />
         </div>
       ) : (
         <div className="h-[300px] w-full">{children}</div>

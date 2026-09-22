@@ -16,10 +16,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Configuration
-AWS_REGION = "ap-south-1"
-S3_BUCKET = "cp-dev-datalake-321422008826"
-JOB_NAME = "cp_dev_silver_etl"
-IAM_ROLE_NAME = "cp-dev-glue-role"
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+S3_BUCKET = os.getenv("S3_BUCKET", "cp-dev-datalake-321422008826")
+JOB_NAME = os.getenv("GLUE_SILVER_JOB_NAME", "cp_dev_silver_etl")
+IAM_ROLE_NAME = os.getenv("GLUE_IAM_ROLE_NAME", "cp-dev-glue-role")
 LOCAL_SCRIPT_PATH = "glue_jobs/silver_etl.py"
 S3_SCRIPT_PATH = f"s3://{S3_BUCKET}/scripts/silver_etl.py"
 S3_TEMP_PATH = f"s3://{S3_BUCKET}/temporary/"

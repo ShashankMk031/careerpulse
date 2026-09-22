@@ -162,8 +162,17 @@ def transform_dataframe(df):
         .otherwise(lit("onsite"))
     )
     
-    # Window specification to find duplicates based on ID, ordering by epoch descending
-    windowSpec = Window.partitionBy("id").orderBy(desc("epoch"))
+    # Window specification to find duplicates based on ID, ordering by snapshot date (year, month, day) then epoch descending
+    windowSpec = (
+        Window
+        .partitionBy("id")
+        .orderBy(
+            desc("year"),
+            desc("month"),
+            desc("day"),
+            desc("epoch")
+        )
+    )
     df_ranked = df_trans.withColumn("row_num", row_number().over(windowSpec))
     
     # Deduplicate: Keep newest (row_num == 1) for Silver, mark rest as duplicate in Quarantine

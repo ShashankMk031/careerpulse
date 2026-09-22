@@ -1,5 +1,5 @@
 export const ROUTES = {
-  DASHBOARD: "/",
+  DASHBOARD: "/dashboard",
   COMPANIES: "/companies",
   SKILLS: "/skills",
   TECHNOLOGY: "/technology",
@@ -10,3 +10,4 @@ export const ROUTES = {
 } as const;
 
 export type RoutePath = typeof ROUTES[keyof typeof ROUTES];
+export default ROUTES;

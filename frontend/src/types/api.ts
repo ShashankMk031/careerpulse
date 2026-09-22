@@ -1,8 +1,10 @@
-export interface ResponseEnvelope<T> {
+export interface ApiResponse<T> {
   success: boolean;
   data: T;
   metadata?: PaginationMetadata | null;
 }
+
+export type ResponseEnvelope<T> = ApiResponse<T>;
 
 export interface PaginationMetadata {
   page: number;
@@ -12,6 +14,26 @@ export interface PaginationMetadata {
   has_next: boolean;
   has_previous: boolean;
 }
+
+export interface Summary {
+  total_jobs: number;
+  total_companies: number;
+  total_locations: number;
+  remote_jobs: number;
+  remote_percentage: number;
+  average_salary: number | null;
+  median_salary: number | null;
+  highest_salary: number | null;
+  highest_paying_company: string | null;
+  top_company: string | null;
+  top_skill: string | null;
+  top_country: string | null;
+  jobs_with_salary: number;
+  jobs_without_salary: number;
+  generation_timestamp: string;
+}
+
+export type HiringSummary = Summary;
 
 export interface CompanyAnalytics {
   company: string;
@@ -61,22 +83,9 @@ export interface TechnologyAnalytics {
   top_company: string | null;
 }
 
-export interface HiringSummary {
-  total_jobs: number;
-  total_companies: number;
-  total_locations: number;
-  remote_jobs: number;
-  remote_percentage: number;
-  average_salary: number | null;
-  median_salary: number | null;
-  highest_salary: number | null;
-  highest_paying_company: string | null;
-  top_company: string | null;
-  top_skill: string | null;
-  top_country: string | null;
-  jobs_with_salary: number;
-  jobs_without_salary: number;
-  generation_timestamp: string;
+export interface HealthStatus {
+  status: string;
+  database: string;
 }
 
 export interface DatasetFreshness {

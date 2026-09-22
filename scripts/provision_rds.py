@@ -18,8 +18,11 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 DB_IDENTIFIER = "cp-dev-serving-db"
 DB_NAME = "serving_db"
 DB_USER = "postgres"
-# If DB_PASSWORD isn't configured, fall back to a secure default for dev
-DB_PASSWORD = os.getenv("DB_PASSWORD", "cp_dev_postgres_password_123")
+# Require DB_PASSWORD or DATABASE_PASSWORD from environment
+DB_PASSWORD = os.getenv("DATABASE_PASSWORD") or os.getenv("DB_PASSWORD")
+if not DB_PASSWORD:
+    print("ERROR: DATABASE_PASSWORD or DB_PASSWORD must be set in your environment before provisioning RDS.")
+    sys.exit(1)
 DB_CLASS = "db.t4g.micro"
 DB_ENGINE = "postgres"
 DB_ENGINE_VERSION = "16.13"
@@ -170,14 +173,14 @@ def provision_rds_instance(rds_client, sg_id: str):
     print(f"DB Port:            {PORT}")
     print(f"DB Name:            {DB_NAME}")
     print(f"DB User:            {DB_USER}")
-    print(f"DB Password:        {DB_PASSWORD}")
+    print(f"DB Password:        {'*' * 8} (Configured from environment)")
     print("="*80)
     print("\nACTION REQUIRED: Please update your local .env configuration with:")
-    print(f"DB_HOST={endpoint_address}")
-    print(f"DB_PORT={PORT}")
-    print(f"DB_NAME={DB_NAME}")
-    print(f"DB_USER={DB_USER}")
-    print(f"DB_PASSWORD={DB_PASSWORD}")
+    print(f"DATABASE_HOST={endpoint_address}")
+    print(f"DATABASE_PORT={PORT}")
+    print(f"DATABASE_NAME={DB_NAME}")
+    print(f"DATABASE_USER={DB_USER}")
+    print(f"DATABASE_PASSWORD=<your_configured_password>")
     print("="*80)
 
 def main():

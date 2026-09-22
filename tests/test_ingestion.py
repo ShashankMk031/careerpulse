@@ -44,15 +44,80 @@ class TestIngestionUtils(unittest.TestCase):
         jobs_key = generate_s3_key("remoteok", dt, "jobs")
         self.assertEqual(
             jobs_key,
-            "bronze/source=remoteok/year=2026/month=07/day=10/jobs_20260710T184637Z.jsonl"
+            "bronze/source=remoteok-active/year=2026/month=07/day=10/jobs_20260710T184637Z.jsonl"
         )
+        self.assertTrue(jobs_key.startswith("bronze/source=remoteok-active/"))
 
     def test_generate_s3_key_metadata(self) -> None:
         dt = datetime(2026, 7, 10, 18, 46, 37, tzinfo=timezone.utc)
         metadata_key = generate_s3_key("remoteok", dt, "metadata")
         self.assertEqual(
             metadata_key,
-            "bronze/source=remoteok/year=2026/month=07/day=10/jobs_20260710T184637Z.metadata.json"
+            "bronze/metadata/remoteok/year=2026/month=07/day=10/jobs_20260710T184637Z.metadata.json"
+        )
+        self.assertTrue(metadata_key.startswith("bronze/metadata/remoteok/"))
+
+    def test_s3_keys_crawler_prefix_isolation(self) -> None:
+        """Verify jobs and metadata never share the same crawler data prefix."""
+        dt = datetime(2026, 7, 10, 18, 46, 37, tzinfo=timezone.utc)
+        crawler_data_prefix = "bronze/source=remoteok-active/"
+        
+        jobs_key = generate_s3_key("remoteok", dt, "jobs")
+        metadata_key = generate_s3_key("remoteok", dt, "metadata")
+        
+        # Jobs key must reside within the crawler prefix
+        self.assertTrue(jobs_key.startswith(crawler_data_prefix))
+        
+        # Metadata key must NOT reside within the crawler prefix
+        self.assertFalse(metadata_key.startswith(crawler_data_prefix))
+        self.assertNotIn(crawler_data_prefix, metadata_key)
+        
+        # Metadata must reside under bronze/metadata/remoteok/
+        self.assertTrue(metadata_key.startswith("bronze/metadata/remoteok/"))
+
+    def test_generate_s3_key_idempotent_with_active_suffix(self) -> None:
+        """Verify calling generate_s3_key with source ending in -active behaves cleanly."""
+        dt = datetime(2026, 7, 10, 18, 46, 37, tzinfo=timezone.utc)
+        jobs_key = generate_s3_key("remoteok-active", dt, "jobs")
+        metadata_key = generate_s3_key("remoteok-active", dt, "metadata")
+        
+        self.assertEqual(
+            jobs_key,
+            "bronze/source=remoteok-active/year=2026/month=07/day=10/jobs_20260710T184637Z.jsonl"
+        )
+        self.assertEqual(
+            metadata_key,
+            "bronze/metadata/remoteok/year=2026/month=07/day=10/jobs_20260710T184637Z.metadata.json"
+        )
+
+    def test_generate_s3_key_generic_source_unmodified(self) -> None:
+        """Verify generic sources like adzuna do not have '-active' forced onto them."""
+        dt = datetime(2026, 7, 10, 18, 46, 37, tzinfo=timezone.utc)
+        jobs_key = generate_s3_key("adzuna", dt, "jobs")
+        metadata_key = generate_s3_key("adzuna", dt, "metadata")
+        
+        self.assertEqual(
+            jobs_key,
+            "bronze/source=adzuna/year=2026/month=07/day=10/jobs_20260710T184637Z.jsonl"
+        )
+        self.assertEqual(
+            metadata_key,
+            "bronze/metadata/adzuna/year=2026/month=07/day=10/jobs_20260710T184637Z.metadata.json"
+        )
+
+    def test_generate_s3_key_generic_source_with_active_suffix(self) -> None:
+        """Verify generic source already ending with -active is preserved without duplication."""
+        dt = datetime(2026, 7, 10, 18, 46, 37, tzinfo=timezone.utc)
+        jobs_key = generate_s3_key("adzuna-active", dt, "jobs")
+        metadata_key = generate_s3_key("adzuna-active", dt, "metadata")
+        
+        self.assertEqual(
+            jobs_key,
+            "bronze/source=adzuna-active/year=2026/month=07/day=10/jobs_20260710T184637Z.jsonl"
+        )
+        self.assertEqual(
+            metadata_key,
+            "bronze/metadata/adzuna/year=2026/month=07/day=10/jobs_20260710T184637Z.metadata.json"
         )
 
     def test_generate_pipeline_id_format(self) -> None:
@@ -504,14 +569,64 @@ class TestMainOrchestrator(unittest.TestCase):
         self.assertIsNotNone(result.sha256)
         self.assertIsNone(result.error_message)
         
-        # Should calculate SHA-256 correctly
+        # Verify S3 keys follow canonical partitioning layout
+        self.assertTrue(result.s3_jobs_key.startswith("bronze/source=remoteok-active/"))
+        self.assertTrue(result.s3_jobs_key.endswith(".jsonl"))
+        self.assertTrue(result.s3_metadata_key.startswith("bronze/metadata/remoteok/"))
+        self.assertTrue(result.s3_metadata_key.endswith(".metadata.json"))
+        
+        # Verify crawler data prefix isolation
+        self.assertFalse(result.s3_metadata_key.startswith("bronze/source=remoteok-active/"))
+        
+        # Should calculate SHA-256 correctly over exact JSONL payload bytes
         jobs_jsonl = "\n".join(json.dumps(job, ensure_ascii=False) for job in mock_fetch.return_value["jobs"])
         expected_sha = hashlib.sha256(jobs_jsonl.encode("utf-8")).hexdigest()
         self.assertEqual(result.sha256, expected_sha)
         
-        # Verify both jobs and metadata upload were called
-        mock_upload_jsonl.assert_called_once()
+        # Verify both jobs and metadata upload were called with appropriate keys
+        mock_upload_jsonl.assert_called_once_with(mock_fetch.return_value["jobs"], result.s3_jobs_key)
         mock_upload_json.assert_called_once()
+        self.assertEqual(mock_upload_json.call_args[0][1], result.s3_metadata_key)
+
+    @patch("ingestion.main.fetch_jobs")
+    @patch("ingestion.main.upload_json_to_s3")
+    @patch("ingestion.main.upload_jsonl_to_s3")
+    def test_main_s3_key_prefixes_and_checksum_integrity(
+        self, mock_upload_jsonl: MagicMock, mock_upload_json: MagicMock, mock_fetch: MagicMock
+    ) -> None:
+        """Verify jobs key uses source=remoteok-active, metadata key uses bronze/metadata/remoteok,
+        they never share crawler data prefix, and checksum is based on exact JSONL payload bytes."""
+        sample_jobs = [
+            {"id": "101", "position": "Senior Backend Eng 🐍", "company": "Acme Inc."},
+            {"id": "102", "position": "Data Engineer ⚡", "company": "Pulse Ltd."}
+        ]
+        mock_fetch.return_value = {
+            "metadata": {"last_updated": 1700000000},
+            "jobs": sample_jobs
+        }
+        mock_upload_json.return_value = "meta_etag"
+        mock_upload_jsonl.return_value = "jobs_etag"
+
+        result = main()
+
+        crawler_prefix = "bronze/source=remoteok-active/"
+        metadata_prefix = "bronze/metadata/remoteok/"
+
+        # Assert prefixes
+        self.assertTrue(result.s3_jobs_key.startswith(crawler_prefix))
+        self.assertTrue(result.s3_metadata_key.startswith(metadata_prefix))
+
+        # Assert jobs and metadata never share crawler prefix
+        self.assertFalse(result.s3_metadata_key.startswith(crawler_prefix))
+        self.assertFalse(result.s3_jobs_key.startswith(metadata_prefix))
+
+        # Assert exact JSONL bytes checksum
+        raw_jsonl_str = "\n".join(json.dumps(job, ensure_ascii=False) for job in sample_jobs)
+        raw_jsonl_bytes = raw_jsonl_str.encode("utf-8")
+        expected_checksum = hashlib.sha256(raw_jsonl_bytes).hexdigest()
+
+        self.assertEqual(result.sha256, expected_checksum)
+        self.assertEqual(result.payload_size_bytes, len(raw_jsonl_bytes))
 
     @patch("ingestion.main.fetch_jobs")
     def test_main_api_timeout_failure(self, mock_fetch: MagicMock) -> None:

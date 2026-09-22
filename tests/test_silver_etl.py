@@ -142,6 +142,9 @@ from silver_etl import validate_schema, validate_business_rules, clean_dataframe
 
 class TestSilverETLTransformations(unittest.TestCase):
 
+    def setUp(self):
+        pyspark_sql_window_mock.reset_mock()
+
     def test_validate_schema_valid_flat_bronze_input(self):
         """
         Tests that validate_schema accepts the flat Bronze schema
@@ -318,11 +321,16 @@ class TestSilverETLTransformations(unittest.TestCase):
         self.assertIn("yyyy-MM-dd'T'HH:mm:ssXXX", str(mock_df.withColumn.call_args[0][1]))
         mock_df_ts.drop.assert_called_once_with("date_raw")
         
-        # Verify deduplication window partitioned by id and ordered by epoch descending
+        # Verify deduplication window partitioned by id and ordered by snapshot date (year, month, day) then epoch descending
         pyspark_sql_window_mock.Window.partitionBy.assert_called_with("id")
         pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.assert_called_once()
-        order_expr = str(pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.call_args[0][0])
-        self.assertIn("desc(epoch)", order_expr)
+        order_call_args = pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.call_args[0]
+        order_exprs = [str(arg) for arg in order_call_args]
+        self.assertEqual(len(order_exprs), 4)
+        self.assertIn("desc(year)", order_exprs[0])
+        self.assertIn("desc(month)", order_exprs[1])
+        self.assertIn("desc(day)", order_exprs[2])
+        self.assertIn("desc(epoch)", order_exprs[3])
         
         # Verify duplicate records receive reason="duplicate"
         mock_dup_filtered.withColumn.assert_called_once_with("reason", mock_dup_filtered.withColumn.call_args[0][1])
@@ -336,6 +344,190 @@ class TestSilverETLTransformations(unittest.TestCase):
         # Verify returned dataframes
         self.assertEqual(silver_df, mock_silver_final)
         self.assertEqual(duplicates_df, mock_dup_final)
+
+    def test_deduplication_identical_epoch_newest_snapshot_wins(self):
+        """
+        Regression test for bug where identical epoch between snapshots had no deterministic tie-breaker.
+        id = "123", 09/18: epoch = 1000, 09/19: epoch = 1000.
+        Verify that the 09/19 record survives deduplication into Silver, and 09/18 is quarantined.
+        """
+        rows = [
+            {"id": "123", "epoch": 1000, "year": "2026", "month": "09", "day": "18", "location": "Remote", "date_raw": "2026-09-18T10:00:00Z"},
+            {"id": "123", "epoch": 1000, "year": "2026", "month": "09", "day": "19", "location": "Remote", "date_raw": "2026-09-19T10:00:00Z"},
+        ]
+        df = MockDataFrameWithRows(rows)
+        silver_df, duplicates_df = transform_dataframe(df)
+        
+        silver_records = silver_df.collect()
+        duplicate_records = duplicates_df.collect()
+        
+        self.assertEqual(len(silver_records), 1)
+        self.assertEqual(silver_records[0]["day"], "19")
+        self.assertEqual(silver_records[0]["epoch"], 1000)
+        
+        self.assertEqual(len(duplicate_records), 1)
+        self.assertEqual(duplicate_records[0]["day"], "18")
+        self.assertEqual(duplicate_records[0]["reason"], "duplicate")
+
+    def test_deduplication_older_snapshot_higher_epoch_snapshot_date_wins(self):
+        """
+        Verify that snapshot/ingestion date is the primary ordering criterion:
+        id = "123", 09/18: epoch = 2000, 09/19: epoch = 1000.
+        Verify that 09/19 still wins because snapshot date takes precedence over source epoch.
+        """
+        rows = [
+            {"id": "123", "epoch": 2000, "year": "2026", "month": "09", "day": "18", "location": "Remote", "date_raw": "2026-09-18T10:00:00Z"},
+            {"id": "123", "epoch": 1000, "year": "2026", "month": "09", "day": "19", "location": "Remote", "date_raw": "2026-09-19T10:00:00Z"},
+        ]
+        df = MockDataFrameWithRows(rows)
+        silver_df, duplicates_df = transform_dataframe(df)
+        
+        silver_records = silver_df.collect()
+        duplicate_records = duplicates_df.collect()
+        
+        self.assertEqual(len(silver_records), 1)
+        self.assertEqual(silver_records[0]["day"], "19")
+        self.assertEqual(silver_records[0]["epoch"], 1000)
+        
+        self.assertEqual(len(duplicate_records), 1)
+        self.assertEqual(duplicate_records[0]["day"], "18")
+        self.assertEqual(duplicate_records[0]["reason"], "duplicate")
+
+    def test_deduplication_normal_case_newest_snapshot_wins(self):
+        """
+        Normal case where newer snapshot also has newer epoch:
+        id = "123", 09/18: epoch = 1000, 09/19: epoch = 2000.
+        Verify that 09/19 wins.
+        """
+        rows = [
+            {"id": "123", "epoch": 1000, "year": "2026", "month": "09", "day": "18", "location": "Remote", "date_raw": "2026-09-18T10:00:00Z"},
+            {"id": "123", "epoch": 2000, "year": "2026", "month": "09", "day": "19", "location": "Remote", "date_raw": "2026-09-19T10:00:00Z"},
+        ]
+        df = MockDataFrameWithRows(rows)
+        silver_df, duplicates_df = transform_dataframe(df)
+        
+        silver_records = silver_df.collect()
+        duplicate_records = duplicates_df.collect()
+        
+        self.assertEqual(len(silver_records), 1)
+        self.assertEqual(silver_records[0]["day"], "19")
+        self.assertEqual(silver_records[0]["epoch"], 2000)
+        
+        self.assertEqual(len(duplicate_records), 1)
+        self.assertEqual(duplicate_records[0]["day"], "18")
+        self.assertEqual(duplicate_records[0]["reason"], "duplicate")
+
+
+    def test_deduplication_window_specification_contract(self):
+        """
+        Directly asserts that transform_dataframe configures the Window specification
+        with the exact expected partition and hierarchical descending sort columns:
+        Window.partitionBy('id').orderBy(desc('year'), desc('month'), desc('day'), desc('epoch'))
+        """
+        mock_df = MagicMock()
+        transform_dataframe(mock_df)
+
+        # 1. Assert partition column is strictly 'id'
+        pyspark_sql_window_mock.Window.partitionBy.assert_called_with("id")
+
+        # 2. Assert orderBy was called
+        pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.assert_called_once()
+        order_call_args = pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.call_args[0]
+        order_exprs = [str(arg) for arg in order_call_args]
+
+        # 3. Assert exact count and hierarchical ordering: year -> month -> day -> epoch
+        self.assertEqual(len(order_exprs), 4)
+        self.assertEqual(order_exprs[0], "desc(year)")
+        self.assertEqual(order_exprs[1], "desc(month)")
+        self.assertEqual(order_exprs[2], "desc(day)")
+        self.assertEqual(order_exprs[3], "desc(epoch)")
+
+
+class Row(dict):
+    """Mock Spark Row supporting key access and attribute access."""
+    def __getattr__(self, item):
+        try:
+            return self[item]
+        except KeyError:
+            raise AttributeError(item)
+
+
+class MockDataFrameWithRows:
+    """
+    Lightweight simulation DataFrame for unit testing PySpark pipeline flow in a JVM-free environment.
+    Note: In local test runs without a Java Runtime (JVM), PySpark cannot start a local SparkSession.
+    This mock reads the actual window specification AST produced by production code and simulates
+    how row_number(), filtering, and quarantine tagging consume that window specification.
+    """
+    def __init__(self, rows):
+        self.rows = [Row(r) for r in rows]
+
+    def withColumn(self, col_name, expr):
+        if col_name == "row_num":
+            # Extract ordering from windowSpec orderBy call on mock
+            order_call_args = pyspark_sql_window_mock.Window.partitionBy.return_value.orderBy.call_args
+            order_exprs = [str(arg) for arg in order_call_args[0]] if order_call_args else []
+            
+            # Group rows by partition column ('id')
+            from collections import defaultdict
+            groups = defaultdict(list)
+            for r in self.rows:
+                groups[r.get("id")].append(Row(r))
+            
+            new_rows = []
+            for job_id, group in groups.items():
+                def sort_key(row):
+                    key = []
+                    for o in order_exprs:
+                        if "desc(year)" in o:
+                            key.append(str(row.get("year", "")))
+                        elif "desc(month)" in o:
+                            key.append(str(row.get("month", "")))
+                        elif "desc(day)" in o:
+                            key.append(str(row.get("day", "")))
+                        elif "desc(epoch)" in o:
+                            key.append(int(row.get("epoch", 0)))
+                    return tuple(key)
+                
+                group.sort(key=sort_key, reverse=True)
+                for rank, row in enumerate(group, start=1):
+                    row["row_num"] = rank
+                    new_rows.append(row)
+            return MockDataFrameWithRows(new_rows)
+        elif col_name == "reason":
+            new_rows = []
+            for r in self.rows:
+                r_copy = Row(r)
+                r_copy["reason"] = "duplicate" if "duplicate" in str(expr) else str(expr)
+                new_rows.append(r_copy)
+            return MockDataFrameWithRows(new_rows)
+        else:
+            new_rows = [Row(r) for r in self.rows]
+            return MockDataFrameWithRows(new_rows)
+
+    def drop(self, col_name):
+        new_rows = []
+        for r in self.rows:
+            r_copy = Row(r)
+            r_copy.pop(col_name, None)
+            new_rows.append(r_copy)
+        return MockDataFrameWithRows(new_rows)
+
+    def filter(self, expr):
+        expr_str = str(expr)
+        if "== 1" in expr_str:
+            filtered = [r for r in self.rows if r.get("row_num") == 1]
+        elif "> 1" in expr_str:
+            filtered = [r for r in self.rows if r.get("row_num", 0) > 1]
+        else:
+            filtered = list(self.rows)
+        return MockDataFrameWithRows(filtered)
+
+    def collect(self):
+        return list(self.rows)
+
+    def count(self):
+        return len(self.rows)
 
 if __name__ == "__main__":
     unittest.main()

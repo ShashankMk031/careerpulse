@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import Sidebar from "./components/layout/Sidebar";
@@ -50,7 +50,8 @@ export function AppRoutes() {
           <PageContainer>
             <Suspense fallback={<Loading />}>
               <Routes>
-                <Route path="/" element={<Dashboard />} />
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/companies" element={<Companies />} />
                 <Route path="/skills" element={<Skills />} />
                 <Route path="/technology" element={<Technology />} />

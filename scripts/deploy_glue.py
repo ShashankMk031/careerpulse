@@ -12,11 +12,12 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Configuration
-AWS_REGION = "ap-south-1"
-DATABASE_NAME = "cp_dev_catalog"
-CRAWLER_NAME = "cp_dev_bronze_crawler"
-IAM_ROLE_NAME = "cp-dev-glue-role"
-S3_TARGET_PATH = "s3://cp-dev-datalake-321422008826/bronze/source=remoteok/"
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+S3_BUCKET = os.getenv("S3_BUCKET", "cp-dev-datalake-321422008826")
+DATABASE_NAME = os.getenv("GLUE_DATABASE_NAME", "cp_dev_catalog")
+CRAWLER_NAME = os.getenv("GLUE_BRONZE_CRAWLER_NAME", "cp_dev_bronze_crawler")
+IAM_ROLE_NAME = os.getenv("GLUE_IAM_ROLE_NAME", "cp-dev-glue-role")
+S3_TARGET_PATH = f"s3://{S3_BUCKET}/bronze/source=remoteok/"
 
 def get_role_arn(iam_client, role_name: str) -> str:
     try:

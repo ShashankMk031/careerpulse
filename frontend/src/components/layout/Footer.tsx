@@ -1,4 +1,6 @@
 
+import { API_BASE_URL } from "../../config/env";
+
 export default function Footer() {
   return (
     <footer className="py-4 px-6 border-t border-slate-100 dark:border-slate-800/40 bg-white dark:bg-slate-900 text-slate-400 dark:text-slate-550 text-xs mt-auto transition-colors duration-150">
@@ -21,7 +23,7 @@ export default function Footer() {
             GitHub
           </a>
           <a
-            href="http://localhost:8000/docs"
+            href={`${API_BASE_URL}/docs`}
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors focus:outline-none focus:underline"

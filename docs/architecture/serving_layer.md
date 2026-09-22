@@ -259,7 +259,7 @@ To facilitate quick sandbox testing and testing without AWS RDS cloud dependenci
 
 ### A. Compose Services Layout
 Running `docker-compose up -d` provisions:
-1. **PostgreSQL Container:** Runs standard PostgreSQL `16` mapping to port `5433` (to avoid collision with local port `5432`). Creates database `serving_db` with password `cp_local_postgres_password`.
+1. **PostgreSQL Container:** Runs standard PostgreSQL `16` mapping to port `5433` (to avoid collision with local port `5432`). Creates database `serving_db` with password `postgres` (or as configured via `POSTGRES_PASSWORD`).
 2. **pgAdmin Container:** Exposes a web administration console at `http://localhost:5050` (Username: `admin@careerpulse.dev`, Password: `admin`).
 
 ### B. Environment Switch configurations
@@ -274,14 +274,14 @@ LOCAL_DB_HOST=localhost
 LOCAL_DB_PORT=5433
 LOCAL_DB_NAME=serving_db
 LOCAL_DB_USER=postgres
-LOCAL_DB_PASSWORD=cp_local_postgres_password
+LOCAL_DB_PASSWORD=your_local_password
 
 # RDS configurations
 DB_HOST=cp-dev-serving-db.c1kmm6w8om3i.ap-south-1.rds.amazonaws.com
 DB_PORT=5432
 DB_NAME=serving_db
 DB_USER=postgres
-DB_PASSWORD=cp_dev_postgres_password_123
+DB_PASSWORD=your_secure_rds_password
 ```
 * **No Side Effects:** When `DB_ENVIRONMENT` is set to `RDS` or omitted, the application uses production AWS RDS host credentials, ensuring zero disruption to AWS pipelines.
 

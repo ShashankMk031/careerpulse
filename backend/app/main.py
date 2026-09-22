@@ -40,10 +40,42 @@ async def lifespan(app: FastAPI):
     print("Shutting down FastAPI serving server...")
     close_pool()
 
+tags_metadata = [
+    {
+        "name": "System",
+        "description": "System health, telemetry, process liveness, and database readiness endpoints.",
+    },
+    {
+        "name": "Summary",
+        "description": "High-level executive market metrics, top skill/company highlights, and dataset freshness.",
+    },
+    {
+        "name": "Companies",
+        "description": "Company-level hiring analytics, job volumes, remote ratios, and salary distributions.",
+    },
+    {
+        "name": "Skills",
+        "description": "Skill frequency, demand rankings, and market penetration across remote tech roles.",
+    },
+    {
+        "name": "Technology",
+        "description": "Technology stack categorizations and hiring volume analytics.",
+    },
+    {
+        "name": "Geography",
+        "description": "Geographical distribution of remote opportunities across countries and regions.",
+    },
+    {
+        "name": "Salary",
+        "description": "Compensation analytics, salary tier breakdowns, and compensation distributions.",
+    },
+]
+
 app = FastAPI(
     title="CareerPulse Serving API",
     description="Production-ready REST API exposing job market intelligence analytics from the serving layer.",
-    version="1.0.0",
+    version=settings.APP_VERSION,
+    openapi_tags=tags_metadata,
     contact={
         "name": "CareerPulse Support",
         "email": "support@careerpulse.dev"
@@ -143,6 +175,7 @@ async def handle_generic_exception(request: Request, exc: Exception):
 @app.get(
     "/",
     response_model=ResponseEnvelope[dict],
+    tags=["System"],
     summary="API Root Info",
     description="Returns standard serving API info and operational status."
 )
@@ -157,8 +190,9 @@ def root():
 @app.get(
     "/health",
     response_model=ResponseEnvelope[dict],
+    tags=["System"],
     summary="API Health Check",
-    description="Validates active connection and latency to PostgreSQL RDS database."
+    description="Validates process liveness and active connection readiness to PostgreSQL RDS database."
 )
 def health(db=Depends(get_db)):
     with db.cursor() as cursor:
@@ -172,6 +206,7 @@ def health(db=Depends(get_db)):
 @app.get(
     "/metrics",
     response_model=ResponseEnvelope[list[DatasetFreshnessOut]],
+    tags=["System"],
     summary="Pipeline Freshness Metrics",
     description="Exposes sync loading metrics and dataset refresh age alerts from serving.v_dataset_status view."
 )
@@ -188,6 +223,7 @@ def get_git_commit() -> str:
 @app.get(
     "/version",
     response_model=ResponseEnvelope[dict],
+    tags=["System"],
     summary="API Version Details",
     description="Exposes active API version metadata, Python build targets, and latest Git commit telemetry."
 )

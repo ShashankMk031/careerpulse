@@ -330,6 +330,208 @@ class TestServingAPI(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("Content-Encoding"), "gzip")
 
+from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
+import sys
+import json
+from backend.app.utils.context import (
+    DBTimingAccumulator,
+    db_timing_ctx,
+    get_db_duration,
+    reset_db_timing,
+    track_db_time,
+    db_duration_ctx,
+    get_or_create_db_timing
+)
+from backend.app.repositories.summary import SummaryRepository
+
+class TestDatabaseTimingInstrumentation(unittest.TestCase):
+    """
+    Focused test suite proving:
+    a. Decorated repository calls produce non-zero accumulated DB timing;
+    b. RequestLoggingMiddleware exposes the accumulated value in X-Database-Time-MS;
+    c. Concurrent/request-scoped calls do not leak timing across requests;
+    d. api_duration remains non-negative and correctly computed;
+    e. get_db() initializes/resets timing exactly once per request.
+    """
+
+    def setUp(self):
+        # Reset mock cursor
+        mock_cursor.reset_mock()
+
+    def test_decorated_repository_call_produces_nonzero_timing(self):
+        """
+        Requirement 3a: Proves a decorated repository method accumulates non-zero DB timing.
+        """
+        mock_cursor.fetchone.return_value = (
+            1, 100, 10, 5, 40, 40.0, 120000.0, 110000.0, 200000.0,
+            "Google", "Amazon", "Python", "USA", 50, 50,
+            datetime.now(timezone.utc), datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
+        reset_db_timing()
+        self.assertEqual(get_db_duration(), 0.0)
+
+        # Call decorated repository method
+        result = SummaryRepository.get_kpis(mock_db_conn)
+        self.assertIsNotNone(result)
+        
+        timing_val = get_db_duration()
+        self.assertGreater(timing_val, 0.0)
+        
+        acc = db_timing_ctx.get()
+        self.assertIsNotNone(acc)
+        self.assertEqual(acc.call_count, 1)
+
+        # Call second decorated method to verify accumulation
+        mock_cursor.fetchall.return_value = []
+        SummaryRepository.get_freshness_metrics(mock_db_conn)
+        self.assertGreater(get_db_duration(), timing_val)
+        self.assertEqual(acc.call_count, 2)
+
+    def test_middleware_exposes_accumulated_db_time_header(self):
+        """
+        Requirement 3b: Proves RequestLoggingMiddleware exposes accumulated DB time in X-Database-Time-MS.
+        """
+        mock_cursor.fetchone.return_value = (
+            1, 100, 10, 5, 40, 40.0, 120000.0, 110000.0, 200000.0,
+            "Google", "Amazon", "Python", "USA", 50, 50,
+            datetime.now(timezone.utc), datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
+
+        response = client.get("/api/v1/summary")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("X-Request-ID", response.headers)
+        self.assertIn("X-Process-Time-MS", response.headers)
+        self.assertIn("X-Database-Time-MS", response.headers)
+
+        db_time = float(response.headers["X-Database-Time-MS"])
+        process_time = float(response.headers["X-Process-Time-MS"])
+        self.assertGreater(db_time, 0.0)
+        self.assertGreaterEqual(process_time, 0.0)
+
+        # Endpoint without DB queries returns 0.00
+        res_no_db = client.get("/")
+        self.assertEqual(res_no_db.status_code, 200)
+        self.assertEqual(res_no_db.headers.get("X-Database-Time-MS"), "0.00")
+
+    def test_concurrent_request_isolation(self):
+        """
+        Requirement 3c: Proves concurrent/request-scoped calls do not leak timing into another request.
+        """
+        mock_cursor.fetchone.return_value = (
+            1, 100, 10, 5, 40, 40.0, 120000.0, 110000.0, 200000.0,
+            "Google", "Amazon", "Python", "USA", 50, 50,
+            datetime.now(timezone.utc), datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
+
+        def make_db_request():
+            res = client.get("/api/v1/summary")
+            return "db", float(res.headers.get("X-Database-Time-MS", "0.00"))
+
+        def make_no_db_request():
+            res = client.get("/")
+            return "no_db", float(res.headers.get("X-Database-Time-MS", "0.00"))
+
+        tasks = []
+        for _ in range(15):
+            tasks.append(make_db_request)
+            tasks.append(make_no_db_request)
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(fn) for fn in tasks]
+            results = [f.result() for f in futures]
+
+        for req_type, db_ms in results:
+            if req_type == "no_db":
+                self.assertEqual(db_ms, 0.0, "Non-DB request was contaminated by concurrent DB request!")
+            elif req_type == "db":
+                self.assertGreater(db_ms, 0.0, "DB request failed to record timing!")
+
+    def test_api_duration_calculation_and_non_negative(self):
+        """
+        Requirement 3d: Proves api_duration remains non-negative: max(0.0, total - db).
+        """
+        # Test mathematical edge cases
+        self.assertEqual(max(0.0, 10.0 - 5.0), 5.0)
+        self.assertEqual(max(0.0, 5.0 - 5.0), 0.0)
+        self.assertEqual(max(0.0, 3.0 - 5.0), 0.0)
+
+        # Test log output from actual request
+        mock_cursor.fetchone.return_value = (
+            1, 100, 10, 5, 40, 40.0, 120000.0, 110000.0, 200000.0,
+            "Google", "Amazon", "Python", "USA", 50, 50,
+            datetime.now(timezone.utc), datetime.now(timezone.utc), datetime.now(timezone.utc)
+        )
+        stdout_capture = StringIO()
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = stdout_capture
+            response = client.get("/api/v1/summary")
+            self.assertEqual(response.status_code, 200)
+        finally:
+            sys.stdout = old_stdout
+
+        log_lines = stdout_capture.getvalue().strip().split("\n")
+        summary_log = None
+        for line in log_lines:
+            try:
+                parsed = json.loads(line)
+                if parsed.get("path") == "/api/v1/summary":
+                    summary_log = parsed
+                    break
+            except Exception:
+                continue
+
+        self.assertIsNotNone(summary_log, "Structured JSON log for /api/v1/summary was not found")
+        self.assertGreaterEqual(summary_log["api_duration"], 0.0)
+        self.assertGreater(summary_log["database_duration"], 0.0)
+        self.assertEqual(
+            summary_log["api_duration"],
+            round(max(0.0, summary_log["duration"] - summary_log["database_duration"]), 2)
+        )
+
+    def test_get_db_initializes_once_per_request(self):
+        """
+        Requirement 11: Proves get_db() initializes/resets timing exactly once per request.
+        """
+        # Patch pool so get_db can run its actual code
+        with patch("backend.app.database.get_pooled_connection") as mock_get_conn:
+            mock_get_conn.return_value.__enter__.return_value = mock_db_conn
+            
+            # 1. Start simulated request with fresh uninitialized accumulator
+            acc = DBTimingAccumulator()
+            token = db_timing_ctx.set(acc)
+            try:
+                self.assertFalse(acc.initialized)
+                
+                # First call to get_db in request
+                db_gen = get_db()
+                conn1 = next(db_gen)
+                self.assertTrue(acc.initialized)
+                self.assertEqual(acc.duration_ms, 0.0)
+
+                # Simulate a query accumulating 15ms
+                acc.add(15.0)
+                self.assertEqual(acc.duration_ms, 15.0)
+
+                # Second call to get_db in the same request must NOT reset timing
+                db_gen2 = get_db()
+                conn2 = next(db_gen2)
+                self.assertTrue(acc.initialized)
+                self.assertEqual(acc.duration_ms, 15.0)
+
+                # Clean up generators
+                try:
+                    next(db_gen)
+                except StopIteration:
+                    pass
+                try:
+                    next(db_gen2)
+                except StopIteration:
+                    pass
+            finally:
+                db_timing_ctx.reset(token)
+
 def tearDownModule():
     pool_init_patcher.stop()
     pool_close_patcher.stop()

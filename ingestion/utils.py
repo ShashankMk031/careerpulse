@@ -36,10 +36,9 @@ def generate_pipeline_id(timestamp: datetime) -> str:
 
 def generate_s3_key(source: str, timestamp: datetime, content_type: str) -> str:
     """
-    Generates a Hive-partitioned S3 key for a data object.
-    
-    Format:
-        bronze/source={source}/year=YYYY/month=MM/day=DD/jobs_YYYYMMDDTHHMMSSZ[.metadata].json
+    Generates an S3 key for Bronze data or metadata following the canonical layout:
+    - Jobs:     bronze/source={source}-active/year=YYYY/month=MM/day=DD/jobs_YYYYMMDDTHHMMSSZ.jsonl
+    - Metadata: bronze/metadata/{source}/year=YYYY/month=MM/day=DD/jobs_YYYYMMDDTHHMMSSZ.metadata.json
         
     Args:
         source: The data source name (e.g., 'remoteok').
@@ -54,7 +53,11 @@ def generate_s3_key(source: str, timestamp: datetime, content_type: str) -> str:
     day = timestamp.strftime("%d")
     ts_str = timestamp.strftime("%Y%m%dT%H%M%SZ")
     
+    base_source = source.removesuffix("-active")
+    
     if content_type == "metadata":
-        return f"bronze/source={source}/year={year}/month={month}/day={day}/jobs_{ts_str}.metadata.json"
-    else:
-        return f"bronze/source={source}/year={year}/month={month}/day={day}/jobs_{ts_str}.jsonl"
+        return f"bronze/metadata/{base_source}/year={year}/month={month}/day={day}/jobs_{ts_str}.metadata.json"
+    
+    # RemoteOK canonical crawler target in Bronze is source=remoteok-active
+    source_partition = "remoteok-active" if base_source == "remoteok" else source
+    return f"bronze/source={source_partition}/year={year}/month={month}/day={day}/jobs_{ts_str}.jsonl"

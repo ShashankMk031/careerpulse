@@ -7,7 +7,7 @@ services:
     environment:
       - POSTGRES_DB=serving_db
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=cp_local_postgres_password
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
     ports:
       - "5433:5432"
     volumes:
@@ -30,7 +30,7 @@ services:
       - DB_PORT=5432
       - DB_NAME=serving_db
       - DB_USER=postgres
-      - DB_PASSWORD=cp_local_postgres_password
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
       - APP_ENV=development
       - LOG_LEVEL=debug
     ports:

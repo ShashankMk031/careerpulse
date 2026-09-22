@@ -1,9 +1,12 @@
-import { useSearchParams } from "react-router-dom";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   GlobeAltIcon,
-  HomeModernIcon,
-  ArrowTrendingUpIcon,
+  MapPinIcon,
+  BuildingOfficeIcon,
+  ComputerDesktopIcon,
+  InformationCircleIcon,
+  ArrowPathIcon,
 } from "@heroicons/react/24/outline";
 
 // Recharts imports
@@ -15,25 +18,32 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
 } from "recharts";
 
 // API services
 import { getGeography } from "../api/geography";
-import { getDashboardSummary } from "../api/summary";
 
 // UI Components
-import Heading from "../components/common/Heading";
-import SummaryCard from "../components/common/SummaryCard";
+import PageHeader from "../components/common/PageHeader";
+import StatCard from "../components/common/StatCard";
 import ChartCard from "../components/common/ChartCard";
-import AnalyticsTable from "../components/common/AnalyticsTable";
-import Pagination from "../components/common/Pagination";
+import DataTable, { type ColumnDef } from "../components/common/DataTable";
+import SearchBox from "../components/common/SearchBox";
+import FilterBar from "../components/common/FilterBar";
+
+// Formatting
+import {
+  formatNumber,
+  formatCurrency,
+  truncateText,
+} from "../utils/formatters";
+import type { GeographyAnalytics } from "../types/api";
 
 // Custom Tooltip component for Recharts
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     return (
-      <div className="bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700/80 p-3 rounded-lg shadow-md text-xs">
+      <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 rounded-lg shadow-md text-xs">
         <p className="font-semibold text-slate-800 dark:text-slate-100 mb-1">
           {label}
         </p>
@@ -49,192 +59,276 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 };
 
 export default function Geography() {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
-  // Local pagination state
-  const page = parseInt(searchParams.get("page") || "1", 10);
-  const pageSize = parseInt(searchParams.get("page_size") || "20", 10);
-
-  const updatePage = (newPage: number) => {
-    const updated = new URLSearchParams(searchParams);
-    updated.set("page", String(newPage));
-    setSearchParams(updated);
-  };
-
-  const updatePageSize = (newPageSize: number) => {
-    const updated = new URLSearchParams(searchParams);
-    updated.set("page_size", String(newPageSize));
-    updated.set("page", "1");
-    setSearchParams(updated);
-  };
-
-  // Queries
-  const summaryQuery = useQuery({
-    queryKey: ["summary"],
-    queryFn: getDashboardSummary,
-  });
-
+  // Query geography dataset
   const geographyQuery = useQuery({
     queryKey: ["geography_full"],
     queryFn: () => getGeography(),
   });
 
-  const summaryData = summaryQuery.data?.data;
+  const refetchAll = () => {
+    geographyQuery.refetch();
+  };
+
+  const isRefreshing = geographyQuery.isFetching;
+
   const geoData = geographyQuery.data?.data || [];
 
-  // Derive stats
-  const distinctCountries = geoData.length;
-  const remoteJobs = summaryData?.remote_jobs || 0;
-  const largestMarket = geoData.length > 0 ? geoData[0].country : "—";
+  // Summary Metrics derived strictly from the complete geography dataset
+  const totalBuckets = geoData.length;
+  const uniqueCountries = new Set(geoData.map((g) => g.country.trim())).size;
 
-  // Calculate local pagination
-  const startIndex = (page - 1) * pageSize;
-  const paginatedData = geoData.slice(startIndex, startIndex + pageSize);
-  const totalPages = Math.ceil(geoData.length / pageSize);
+  const largestBucket = geoData.length > 0 ? geoData[0] : null;
+  const largestBucketLabel = largestBucket
+    ? `${largestBucket.country} (${largestBucket.jobs_count})`
+    : "—";
+
+  const totalRemoteJobs = geoData.reduce(
+    (acc, curr) => acc + (curr.remote_count || 0),
+    0
+  );
+
+  // Filtering
+  const q = search.trim().toLowerCase();
+  const filteredData = q
+    ? geoData.filter(
+        (item) =>
+          item.country.toLowerCase().includes(q) ||
+          item.region.toLowerCase().includes(q)
+      )
+    : geoData;
+
+  // Pagination slice
+  const start = (page - 1) * pageSize;
+  const paginatedData = filteredData.slice(start, start + pageSize);
+  const totalPages = Math.ceil(filteredData.length / pageSize) || 1;
+
+  // Chart data: Top 10 by jobs count
+  const chartData = geoData.slice(0, 10).map((d) => ({
+    ...d,
+    displayName: truncateText(`${d.country}${d.region && d.region !== d.country ? ` (${d.region})` : ""}`, 22),
+  }));
+
+  // Table column definitions
+  const columns: ColumnDef<GeographyAnalytics>[] = [
+    {
+      key: "country",
+      header: "Country",
+      render: (item) => (
+        <div className="flex items-center space-x-2">
+          <div className="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 font-semibold">
+            <GlobeAltIcon className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="font-semibold text-slate-900 dark:text-white">
+              {item.country}
+            </div>
+            {item.region && item.region !== item.country && (
+              <div className="text-[11px] text-slate-400 dark:text-slate-500">
+                Region: {item.region}
+              </div>
+            )}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "jobs_count",
+      header: "Jobs Count",
+      align: "center",
+      render: (item) => (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/40">
+          {item.jobs_count}
+        </span>
+      ),
+    },
+    {
+      key: "company_count",
+      header: "Companies",
+      align: "center",
+      render: (item) => (
+        <div className="inline-flex items-center space-x-1 text-slate-600 dark:text-slate-300">
+          <BuildingOfficeIcon className="w-3.5 h-3.5 text-slate-400" />
+          <span>{item.company_count}</span>
+        </div>
+      ),
+    },
+    {
+      key: "remote_count",
+      header: "Remote Listings",
+      align: "center",
+      render: (item) => (
+        <span className="text-slate-700 dark:text-slate-300 font-medium">
+          {item.remote_count}
+        </span>
+      ),
+    },
+    {
+      key: "onsite_count",
+      header: "Onsite Listings",
+      align: "center",
+      render: (item) => (
+        <span className="text-slate-500 dark:text-slate-400">
+          {item.onsite_count}
+        </span>
+      ),
+    },
+    {
+      key: "salary_range",
+      header: "Salary Range",
+      render: (item) => {
+        if (item.avg_salary_min !== null && item.avg_salary_max !== null) {
+          return (
+            <span className="font-medium text-emerald-700 dark:text-emerald-400">
+              {formatCurrency(item.avg_salary_min, true)} – {formatCurrency(item.avg_salary_max, true)}
+            </span>
+          );
+        }
+        return <span className="text-slate-400 dark:text-slate-500 italic text-xs">Undisclosed</span>;
+      },
+    },
+  ];
 
   return (
     <div className="space-y-6">
-      <Heading
-        title="Geography & Markets"
-        subtitle="Global market distribution, national posting volumes, and remote density mappings."
+      <PageHeader
+        title="Geographic Distribution"
+        subtitle="Regional job market density across monitored global locations."
+        actions={
+          <button
+            onClick={refetchAll}
+            disabled={isRefreshing}
+            className="inline-flex items-center px-3.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg shadow-2xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            aria-label="Refresh geography data"
+          >
+            <ArrowPathIcon className={`w-3.5 h-3.5 mr-1.5 ${isRefreshing ? "animate-spin text-indigo-600" : ""}`} />
+            Refresh
+          </button>
+        }
       />
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <SummaryCard
-          title="Active Countries"
-          value={distinctCountries}
-          description="Distinct national regions active"
+      {/* Mandatory Cumulative Analytics Disclaimer Banner */}
+      <div className="flex items-start p-3.5 rounded-lg border border-amber-200/80 bg-amber-50/70 dark:bg-amber-950/20 dark:border-amber-900/40 text-amber-800 dark:text-amber-300 text-xs leading-relaxed">
+        <InformationCircleIcon className="w-5 h-5 mr-2.5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+        <div>
+          <strong className="font-semibold">Dataset Semantics Notice:</strong> Geographic distribution is based on the cumulative analytics dimension and should not be interpreted as a pure current 99-job snapshot.
+        </div>
+      </div>
+
+      {/* Summary KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          title="Geographic Buckets"
+          value={formatNumber(totalBuckets)}
+          description="Country / region groupings"
+          icon={MapPinIcon}
+          loading={geographyQuery.isLoading}
+        />
+        <StatCard
+          title="Countries Represented"
+          value={formatNumber(uniqueCountries)}
+          description="Distinct sovereign territories"
           icon={GlobeAltIcon}
           loading={geographyQuery.isLoading}
         />
-        <SummaryCard
-          title="Remote Job Postings"
-          value={remoteJobs.toLocaleString()}
-          description="Aggregate flexible work placements"
-          icon={HomeModernIcon}
-          loading={summaryQuery.isLoading}
+        <StatCard
+          title="Largest Job Bucket"
+          value={largestBucketLabel}
+          description="Top hiring geographic market"
+          icon={GlobeAltIcon}
+          loading={geographyQuery.isLoading}
         />
-        <SummaryCard
-          title="Largest Market"
-          value={largestMarket}
-          description="Country with highest posting volume"
-          icon={ArrowTrendingUpIcon}
+        <StatCard
+          title="Remote Jobs"
+          value={formatNumber(totalRemoteJobs)}
+          description="Explicitly flexible remote roles"
+          icon={ComputerDesktopIcon}
           loading={geographyQuery.isLoading}
         />
       </div>
 
-      {/* Visualizations grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Chart 1: Country Demand */}
-        <ChartCard
-          title="Country Market Demand"
-          subtitle="Posting count distribution by country"
-          loading={geographyQuery.isLoading}
-          error={geographyQuery.isError}
-          empty={geoData.length === 0}
-          onRetry={geographyQuery.refetch}
-        >
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              layout="vertical"
-              data={geoData.slice(0, 10)}
-              margin={{ left: 80, right: 10, top: 10, bottom: 10 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#334155" opacity={0.1} />
-              <XAxis type="number" stroke="#64748b" fontSize={10} tickLine={false} />
-              <YAxis
-                dataKey="country"
-                type="category"
-                stroke="#64748b"
-                fontSize={10}
-                tickLine={false}
-                width={75}
-              />
-              <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(100, 116, 139, 0.05)" }} />
-              <Bar dataKey="jobs_count" fill="#10b981" radius={[0, 4, 4, 0]} name="Job Count" />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
+      {/* Top 10 Geographic Concentrations Horizontal Bar Chart */}
+      <ChartCard
+        title="Top 10 Geographic Concentrations"
+        subtitle="Posting distribution across highest-density regional markets"
+        loading={geographyQuery.isLoading}
+        error={geographyQuery.isError}
+        errorMessage="Failed to load geographic chart records."
+        empty={chartData.length === 0}
+        emptyMessage="No geographic records available."
+        onRetry={geographyQuery.refetch}
+      >
+        <ResponsiveContainer width="100%" height={320}>
+          <BarChart
+            layout="vertical"
+            data={chartData}
+            margin={{ top: 10, right: 30, left: 130, bottom: 5 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" horizontal vertical={false} stroke="#e2e8f0" className="dark:opacity-15" />
+            <XAxis type="number" tick={{ fontSize: 11, fill: "#64748b" }} allowDecimals={false} />
+            <YAxis
+              dataKey="displayName"
+              type="category"
+              tick={{ fontSize: 11, fill: "#64748b" }}
+              width={125}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            <Bar dataKey="jobs_count" name="Jobs Count" fill="#10b981" radius={[0, 4, 4, 0]} barSize={16} />
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartCard>
 
-        {/* Chart 2: Remote vs Onsite Stacked Bar */}
-        <ChartCard
-          title="Placement Formats by Country"
-          subtitle="Distribution of remote, hybrid, and onsite listings"
-          loading={geographyQuery.isLoading}
-          error={geographyQuery.isError}
-          empty={geoData.length === 0}
-          onRetry={geographyQuery.refetch}
-        >
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={geoData.slice(0, 10)}
-              margin={{ left: 10, right: 10, top: 10, bottom: 10 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" opacity={0.1} />
-              <XAxis dataKey="country" stroke="#64748b" fontSize={10} tickLine={false} />
-              <YAxis stroke="#64748b" fontSize={10} tickLine={false} />
-              <Tooltip content={<CustomTooltip />} />
-              <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: 10 }} />
-              <Bar dataKey="remote_count" name="Remote" stackId="a" fill="#10b981" />
-              <Bar dataKey="hybrid_count" name="Hybrid" stackId="a" fill="#3b82f6" />
-              <Bar dataKey="onsite_count" name="Onsite" stackId="a" fill="#ef4444" />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      </div>
-
-      {/* Local Paginated Data Table */}
-      <div className="space-y-4">
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-          Geographical Regions Inventory
-        </h3>
-
-        <AnalyticsTable
-          headers={["Country", "Region", "Total Jobs", "Remote Placement Volume", "Remote Ratio"]}
-          data={paginatedData}
-          loading={geographyQuery.isLoading}
-          error={geographyQuery.isError}
-          onRetry={geographyQuery.refetch}
-          renderRow={(row, idx) => {
-            const ratio = row.jobs_count > 0 ? ((row.remote_count / row.jobs_count) * 100).toFixed(1) : "0";
-            return (
-              <tr key={idx} className="hover:bg-slate-50/40 dark:hover:bg-slate-850/10">
-                <td className="px-6 py-3 font-semibold text-slate-900 dark:text-slate-100">
-                  {row.country}
-                </td>
-                <td className="px-6 py-3 text-slate-500 dark:text-slate-400">
-                  {row.region || "All regions"}
-                </td>
-                <td className="px-6 py-3 font-medium">
-                  {row.jobs_count.toLocaleString()}
-                </td>
-                <td className="px-6 py-3">
-                  {row.remote_count.toLocaleString()}
-                </td>
-                <td className="px-6 py-3">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400">
-                    {ratio}%
-                  </span>
-                </td>
-              </tr>
-            );
-          }}
-        />
-
-        {totalPages > 1 && (
-          <Pagination
-            page={page}
-            pageSize={pageSize}
-            totalPages={totalPages}
-            onPageChange={updatePage}
-            onPageSizeChange={updatePageSize}
-            hasPrevious={page > 1}
-            hasNext={page < totalPages}
+      {/* Filter and Search Bar */}
+      <FilterBar>
+        <div className="w-full sm:w-auto flex-1">
+          <SearchBox
+            value={search}
+            onChange={(val) => {
+              setSearch(val);
+              setPage(1);
+            }}
+            placeholder="Filter by country or region..."
           />
-        )}
-      </div>
+          <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1 pl-1">
+            Client-side filter across the complete geography dataset (106 records)
+          </p>
+        </div>
+        <div className="text-xs text-slate-500 dark:text-slate-400">
+          Showing {filteredData.length} of {totalBuckets} locations
+        </div>
+      </FilterBar>
+
+      {/* Main Geography DataTable */}
+      <DataTable
+        columns={columns}
+        data={paginatedData}
+        keyExtractor={(item) => `${item.country}-${item.region}`}
+        loading={geographyQuery.isLoading}
+        error={geographyQuery.error}
+        onRetry={geographyQuery.refetch}
+        emptyTitle="No geographic buckets found"
+        emptyMessage={
+          search
+            ? `No locations matching "${search}" were found in the dataset.`
+            : "No geographic records currently recorded."
+        }
+        pagination={{
+          currentPage: page,
+          pageSize: pageSize,
+          totalPages: totalPages,
+          totalRecords: filteredData.length,
+          hasNext: page < totalPages,
+          hasPrevious: page > 1,
+          onPageChange: (newPage) => setPage(newPage),
+          onPageSizeChange: (newPageSize) => {
+            setPageSize(newPageSize);
+            setPage(1);
+          },
+        }}
+      />
     </div>
   );
 }
-export { Geography };

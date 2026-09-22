@@ -11,6 +11,17 @@ import Sidebar from "./components/layout/Sidebar";
 import ThemeToggle from "./components/common/ThemeToggle";
 import { THEME_KEY, THEMES } from "./constants/theme";
 
+// Hoisted Recharts mock
+vi.mock("recharts", async () => {
+  const original = await vi.importActual("recharts");
+  return {
+    ...original,
+    ResponsiveContainer: ({ children }: any) => (
+      <div style={{ width: 800, height: 300 }}>{children}</div>
+    ),
+  };
+});
+
 const createTestQueryClient = () =>
   new QueryClient({
     defaultOptions: {
@@ -116,16 +127,6 @@ describe("Frontend Dashboard & Analytics Tests", () => {
         removeEventListener: vi.fn(),
         dispatchEvent: vi.fn(),
       })),
-    });
-
-    vi.mock("recharts", async () => {
-      const original = await vi.importActual("recharts");
-      return {
-        ...original,
-        ResponsiveContainer: ({ children }: any) => (
-          <div style={{ width: 800, height: 300 }}>{children}</div>
-        ),
-      };
     });
   });
 
