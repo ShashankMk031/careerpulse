@@ -22,21 +22,21 @@ def get_db_credentials() -> dict:
     
     if db_env == "LOCAL":
         return {
-            "host": os.getenv("DATABASE_HOST") or os.getenv("LOCAL_DB_HOST", "localhost"),
-            "port": os.getenv("DATABASE_PORT") or os.getenv("LOCAL_DB_PORT", "5433"),
-            "database": os.getenv("DATABASE_NAME") or os.getenv("LOCAL_DB_NAME", "serving_db"),
-            "user": os.getenv("DATABASE_USER") or os.getenv("LOCAL_DB_USER", "postgres"),
-            "password": os.getenv("DATABASE_PASSWORD") or os.getenv("LOCAL_DB_PASSWORD") or os.getenv("DB_PASSWORD", ""),
+            "host": os.getenv("LOCAL_DB_HOST") or os.getenv("DATABASE_HOST", "localhost"),
+            "port": os.getenv("LOCAL_DB_PORT") or os.getenv("DATABASE_PORT", "5433"),
+            "database": os.getenv("LOCAL_DB_NAME") or os.getenv("DATABASE_NAME", "serving_db"),
+            "user": os.getenv("LOCAL_DB_USER") or os.getenv("DATABASE_USER", "postgres"),
+            "password": os.getenv("LOCAL_DB_PASSWORD") or os.getenv("DATABASE_PASSWORD") or os.getenv("DB_PASSWORD", ""),
             "schema": schema,
         }
     else:
         # Default environment: RDS (ensures zero changes to production behavior)
         return {
-            "host": os.getenv("DATABASE_HOST") or os.getenv("DB_HOST"),
-            "port": os.getenv("DATABASE_PORT") or os.getenv("DB_PORT", "5432"),
-            "database": os.getenv("DATABASE_NAME") or os.getenv("DB_NAME", "serving_db"),
-            "user": os.getenv("DATABASE_USER") or os.getenv("DB_USER", "postgres"),
-            "password": os.getenv("DATABASE_PASSWORD") or os.getenv("DB_PASSWORD", ""),
+            "host": os.getenv("DB_HOST") or os.getenv("DATABASE_HOST"),
+            "port": os.getenv("DB_PORT") or os.getenv("DATABASE_PORT", "5432"),
+            "database": os.getenv("DB_NAME") or os.getenv("DATABASE_NAME", "serving_db"),
+            "user": os.getenv("DB_USER") or os.getenv("DATABASE_USER", "postgres"),
+            "password": os.getenv("DB_PASSWORD") or os.getenv("DATABASE_PASSWORD", ""),
             "schema": schema,
         }
 
